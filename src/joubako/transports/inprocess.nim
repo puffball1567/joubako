@@ -25,6 +25,12 @@ method send*(
     raise newJoubakoError(
       jeInvalidRequest, "in-process transport has no handler", request.url
     )
+  if request.multipartParts.len > 0:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "file-backed multipart requests require the HTTP transport",
+      request.url
+    )
 
   if not request.options.onUploadProgress.isNil:
     request.options.onUploadProgress(

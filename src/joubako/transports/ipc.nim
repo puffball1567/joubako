@@ -137,6 +137,12 @@ proc exchange(
     request: Request;
     socket: AsyncSocket
 ): Future[Response] {.async.} =
+  if request.multipartParts.len > 0:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "file-backed multipart requests require the HTTP transport",
+      request.url
+    )
   when defined(posix):
     await socket.connectUnix(transport.socketPath)
   else:

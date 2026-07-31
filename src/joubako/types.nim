@@ -24,6 +24,15 @@ type
   RequestMethod* = enum
     rmGet, rmHead, rmPost, rmPut, rmPatch, rmDelete, rmOptions
 
+  MultipartPart* = object
+    ## Buffered parts use `body`. A non-empty `filePath` is opened and streamed
+    ## by transports that support file-backed multipart requests.
+    name*: string
+    filename*: string
+    contentType*: string
+    body*: string
+    filePath*: string
+
   Headers* = object
     values: OrderedTable[string, seq[string]]
 
@@ -65,6 +74,7 @@ type
     url*: string
     headers*: Headers
     body*: string
+    multipartParts*: seq[MultipartPart]
     options*: RequestOptions
 
   Response* = object

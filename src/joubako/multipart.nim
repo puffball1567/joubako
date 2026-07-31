@@ -1,12 +1,5 @@
-import std/[asyncdispatch, base64, strutils, sysrand]
+import std/[asyncdispatch, base64, os, strutils, sysrand]
 import ./[client, result, types]
-
-type
-  MultipartPart* = object
-    name*: string
-    filename*: string
-    contentType*: string
-    body*: string
 
 func formField*(name, value: string): MultipartPart =
   MultipartPart(name: name, body: value)
@@ -20,6 +13,26 @@ func formFile*(
     filename: filename,
     contentType: contentType,
     body: body
+  )
+
+func formFilePath*(
+    name, filePath: string;
+    filename = "";
+    contentType = "application/octet-stream"
+): MultipartPart =
+  ## Describes a file that will be opened and streamed during HTTP dispatch.
+  ## The path itself is never placed in the multipart headers.
+  let transmittedName =
+    if filename.len > 0:
+      filename
+    else:
+      let (_, base, extension) = splitFile(filePath)
+      base & extension
+  MultipartPart(
+    name: name,
+    filename: transmittedName,
+    contentType: contentType,
+    filePath: filePath
   )
 
 proc multipartBoundary*(): string =
@@ -41,6 +54,11 @@ proc encodeMultipart*(
 ): string =
   validateDispositionValue(boundary, "boundary")
   for part in parts:
+    if part.filePath.len > 0:
+      raise newJoubakoError(
+        jeInvalidRequest,
+        "file-backed multipart parts cannot be buffered"
+      )
     validateDispositionValue(part.name, "field name")
     result.add "--" & boundary & "\r\n"
     result.add "Content-Disposition: form-data; name=\"" & part.name & "\""
@@ -64,6 +82,11 @@ proc postMultipart*(
     headers = initHeaders();
     options = RequestOptions()
 ): Future[JResult[Response]] =
+  for part in parts:
+    if part.filePath.len > 0:
+      return client.requestMultipart(
+        rmPost, path, @parts, headers, options
+      )
   let boundary = multipartBoundary()
   var multipartHeaders = headers
   if not multipartHeaders.contains("content-type"):
@@ -75,4 +98,42 @@ proc postMultipart*(
     encodeMultipart(parts, boundary),
     multipartHeaders,
     options
+  )
+
+proc putMultipart*(
+    client: Client;
+    path: string;
+    parts: openArray[MultipartPart];
+    headers = initHeaders();
+    options = RequestOptions()
+): Future[JResult[Response]] =
+  for part in parts:
+    if part.filePath.len > 0:
+      return client.requestMultipart(rmPut, path, @parts, headers, options)
+  let boundary = multipartBoundary()
+  var multipartHeaders = headers
+  if not multipartHeaders.contains("content-type"):
+    multipartHeaders.set(
+      "content-type", "multipart/form-data; boundary=" & boundary
+    )
+  client.put(path, encodeMultipart(parts, boundary), multipartHeaders, options)
+
+proc patchMultipart*(
+    client: Client;
+    path: string;
+    parts: openArray[MultipartPart];
+    headers = initHeaders();
+    options = RequestOptions()
+): Future[JResult[Response]] =
+  for part in parts:
+    if part.filePath.len > 0:
+      return client.requestMultipart(rmPatch, path, @parts, headers, options)
+  let boundary = multipartBoundary()
+  var multipartHeaders = headers
+  if not multipartHeaders.contains("content-type"):
+    multipartHeaders.set(
+      "content-type", "multipart/form-data; boundary=" & boundary
+    )
+  client.patch(
+    path, encodeMultipart(parts, boundary), multipartHeaders, options
   )

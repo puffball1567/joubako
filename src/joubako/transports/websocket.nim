@@ -311,6 +311,12 @@ method send*(
     transport: WebSocketTransport;
     request: Request
 ): Future[Response] {.async.} =
+  if request.multipartParts.len > 0:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "file-backed multipart requests require the HTTP transport",
+      request.url
+    )
   let started = getMonoTime()
   let parsed = parseUri(request.url)
   if not isHostAllowed(parsed.hostname, request.options.allowedHosts):

@@ -1,6 +1,6 @@
-import std/[asyncdispatch, httpclient, httpcore, strutils, times, uri]
+import std/[asyncdispatch, httpclient, httpcore, os, strutils, times, uri]
 import flowbrigade/timeout
-import ../[chunkconsumer, http_retry, transport, types]
+import ../[chunkconsumer, http_retry, result, transport, types]
 
 type
   PooledConnection = object
@@ -125,6 +125,80 @@ func toStdMethod(httpMethod: RequestMethod): HttpMethod =
   of rmPatch: HttpPatch
   of rmDelete: HttpDelete
   of rmOptions: HttpOptions
+
+proc addMultipartSize(total: var int64; amount: int64; request: Request) =
+  if amount < 0 or total > high(int64) - amount:
+    raise newJoubakoError(
+      jeBodyTooLarge, "multipart request size overflow", request.url
+    )
+  total += amount
+  if request.options.maxRequestBytes >= 0 and
+      total > int64(request.options.maxRequestBytes):
+    raise newJoubakoError(
+      jeBodyTooLarge,
+      "multipart request body exceeded the configured limit",
+      request.url
+    )
+
+proc multipartWireSizeUpperBound(request: Request): int64 =
+  ## std/httpclient chooses a decimal random-int boundary. Using the maximum
+  ## possible decimal width gives a safe pre-dispatch upper bound without
+  ## opening or buffering file contents.
+  let boundaryLength = ($high(int)).len
+  for part in request.multipartParts:
+    result.addMultipartSize(int64(2 + boundaryLength + 2), request)
+    result.addMultipartSize(int64(
+      "Content-Disposition: form-data; name=\"\"".len + part.name.len
+    ), request)
+    if part.filename.len > 0:
+      result.addMultipartSize(int64(
+        "; filename=\"\"\r\n".len + part.filename.len +
+        "Content-Type: \r\n\r\n".len + part.contentType.len
+      ), request)
+      let contentSize =
+        if part.filePath.len > 0:
+          if not fileExists(part.filePath):
+            raise newJoubakoError(
+              jeStream,
+              "multipart file does not exist or is not a regular file",
+              request.url
+            )
+          try:
+            getFileSize(part.filePath)
+          except CatchableError as error:
+            raise error.asJoubakoError(jeStream, request.url)
+        else:
+          int64(part.body.len)
+      result.addMultipartSize(contentSize, request)
+      result.addMultipartSize(2, request)
+    else:
+      result.addMultipartSize(int64(4 + part.body.len + 2), request)
+  result.addMultipartSize(int64(2 + boundaryLength + 4), request)
+
+proc buildMultipart(request: Request): MultipartData =
+  if request.multipartParts.len == 0:
+    return nil
+  discard request.multipartWireSizeUpperBound()
+  result = newMultipartData()
+  for part in request.multipartParts:
+    if part.filename.len == 0:
+      result.add(part.name, part.body)
+    elif part.filePath.len > 0:
+      result.add(
+        part.name,
+        part.filePath,
+        part.filename,
+        part.contentType,
+        useStream = true
+      )
+    else:
+      result.add(
+        part.name,
+        part.body,
+        part.filename,
+        part.contentType,
+        useStream = false
+      )
 
 proc readBodyBounded(
     client: AsyncHttpClient;
@@ -263,6 +337,7 @@ proc performRedirectingRequest(
       connection.client.close()
   var currentMethod = request.httpMethod
   var currentBody = request.body
+  var currentMultipartParts = request.multipartParts
   var currentHeaders = initialHeaders
   let deadline =
     if request.options.timeoutMs >= 0:
@@ -277,12 +352,16 @@ proc performRedirectingRequest(
       hopRequest.url = $currentUrl
       hopRequest.httpMethod = currentMethod
       hopRequest.body = currentBody
+      hopRequest.multipartParts = currentMultipartParts
 
+      client.headers = newHttpHeaders()
+      let multipart = hopRequest.buildMultipart()
       let pendingHeaders = client.request(
         hopRequest.url,
         hopRequest.httpMethod.toStdMethod,
         hopRequest.body,
-        currentHeaders
+        currentHeaders,
+        multipart
       )
       var waitMs = request.options.connectTimeoutMs
       if deadline.isInitialized:
@@ -328,9 +407,17 @@ proc performRedirectingRequest(
 
       let raw = await pendingHeaders
       if not request.options.onUploadProgress.isNil:
+        var uploadedBytes = int64(hopRequest.body.len)
+        if multipart != nil:
+          try:
+            uploadedBytes = client.headers
+              .getOrDefault("content-length")
+              .parseBiggestInt
+          except ValueError:
+            uploadedBytes = hopRequest.multipartWireSizeUpperBound()
         request.options.onUploadProgress(
-          int64(hopRequest.body.len),
-          int64(hopRequest.body.len)
+          uploadedBytes,
+          uploadedBytes
         )
       result = await buildResponse(client, raw, hopRequest, deadline)
 
@@ -365,6 +452,7 @@ proc performRedirectingRequest(
           currentMethod notin {rmGet, rmHead}:
         currentMethod = rmGet
         currentBody = ""
+        currentMultipartParts.setLen(0)
         currentHeaders.del("content-length")
         currentHeaders.del("content-type")
         currentHeaders.del("transfer-encoding")

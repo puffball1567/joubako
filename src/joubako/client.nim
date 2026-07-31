@@ -189,7 +189,8 @@ proc requestResult(
     path: string;
     body = "";
     headers = initHeaders();
-    options: RequestOptions = RequestOptions()
+    options: RequestOptions = RequestOptions();
+    multipartParts: seq[MultipartPart] = @[]
 ): Future[JResult[Response]] {.async.} =
   if client == nil or client.transport == nil:
     return err[Response](newJoubakoError(
@@ -239,6 +240,7 @@ proc requestResult(
     url: url,
     headers: mergedHeaders,
     body: body,
+    multipartParts: multipartParts,
     options: effectiveOptions
   )
 
@@ -278,6 +280,46 @@ proc requestResult(
         "request contains an invalid header",
         request.url
       ))
+
+  if request.multipartParts.len > 0:
+    if request.body.len > 0:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "multipart requests cannot also contain a buffered body",
+        request.url
+      ))
+    if request.headers.contains("content-type"):
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "file-backed multipart content type and boundary are generated automatically",
+        request.url
+      ))
+    for part in request.multipartParts:
+      if part.name.len == 0 or
+          part.name.contains({'\r', '\n', '"'}):
+        return err[Response](newJoubakoError(
+          jeInvalidRequest, "invalid multipart field name", request.url
+        ))
+      if part.filename.contains({'\r', '\n', '"'}):
+        return err[Response](newJoubakoError(
+          jeInvalidRequest, "invalid multipart filename", request.url
+        ))
+      if part.contentType.contains({'\r', '\n'}):
+        return err[Response](newJoubakoError(
+          jeInvalidRequest, "invalid multipart content type", request.url
+        ))
+      if part.filePath.len > 0 and part.filename.len == 0:
+        return err[Response](newJoubakoError(
+          jeInvalidRequest,
+          "file-backed multipart part has no transmitted filename",
+          request.url
+        ))
+      if part.filePath.len > 0 and part.body.len > 0:
+        return err[Response](newJoubakoError(
+          jeInvalidRequest,
+          "file-backed multipart part cannot also contain buffered data",
+          request.url
+        ))
 
   if request.options.maxRequestBytes >= 0 and
       request.body.len > request.options.maxRequestBytes:
@@ -511,6 +553,28 @@ proc request*(
       httpMethod, path, body, headers, options
     )),
     jeTransport, path
+  )
+
+proc requestMultipart*(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    parts: seq[MultipartPart];
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions()
+): Future[JResult[Response]] =
+  ## Dispatches multipart metadata without materializing file-backed parts.
+  ## The HTTP transport supplies the boundary and streams each file path.
+  settleResult(
+    fallible(client.requestResult(
+      httpMethod,
+      path,
+      headers = headers,
+      options = options,
+      multipartParts = parts
+    )),
+    jeTransport,
+    path
   )
 
 proc get*(

@@ -954,6 +954,102 @@ suite "Joubako HTTP transport":
     check downloaded == (5'i64, 5'i64)
     server.close()
 
+  test "file-backed multipart streams files with generated boundaries":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let captured = newFuture[CapturedRequest]("test_http.multipartFile")
+    let serving = captureRequest(server, captured, "uploaded")
+    let sourcePath = getTempDir() /
+      ("joubako-upload-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(sourcePath):
+        removeFile(sourcePath)
+    writeFile(sourcePath, "binary\0payload")
+    var uploaded = (-1'i64, -1'i64)
+    var options = defaultRequestOptions()
+    options.onUploadProgress =
+      proc(done, total: int64) = uploaded = (done, total)
+    let client = newClient(newHttpTransport())
+    let response = waitFor client.postMultipart(
+      "http://127.0.0.1:" & $int(port) & "/upload",
+      [
+        formField("title", "report"),
+        formFilePath(
+          "document",
+          sourcePath,
+          filename = "report.bin",
+          contentType = "application/octet-stream"
+        )
+      ],
+      options = options
+    )
+    waitFor serving
+    let request = captured.read
+    check response.body == "uploaded"
+    check request.requestLine.startsWith("POST /upload ")
+    check "content-type: multipart/form-data; boundary=" in
+      request.headers.toLowerAscii
+    check "name=\"title\"" in request.body
+    check "report" in request.body
+    check "name=\"document\"; filename=\"report.bin\"" in request.body
+    check "binary\0payload" in request.body
+    check uploaded == (int64(request.body.len), int64(request.body.len))
+    server.close()
+
+  test "streamed multipart enforces the complete wire-size limit":
+    let sourcePath = getTempDir() /
+      ("joubako-upload-limit-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(sourcePath):
+        removeFile(sourcePath)
+    writeFile(sourcePath, "12345678")
+    var options = defaultRequestOptions()
+    options.maxRequestBytes = 8
+    let client = newClient(newHttpTransport())
+    try:
+      discard waitFor client.postMultipart(
+        "http://127.0.0.1:1/upload",
+        [formFilePath("file", sourcePath)],
+        options = options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeBodyTooLarge
+
+  test "missing streamed multipart files are structured stream errors":
+    let client = newClient(newHttpTransport())
+    try:
+      discard waitFor client.postMultipart(
+        "http://127.0.0.1:1/upload",
+        [formFilePath("file", "/tmp/joubako-file-does-not-exist")]
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeStream
+
+  test "streamed multipart rejects caller-supplied content types":
+    let sourcePath = getTempDir() /
+      ("joubako-upload-content-type-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(sourcePath):
+        removeFile(sourcePath)
+    writeFile(sourcePath, "data")
+    var headers = initHeaders()
+    headers.set("content-type", "multipart/form-data; boundary=forged")
+    let client = newClient(newHttpTransport())
+    try:
+      discard waitFor client.postMultipart(
+        "http://127.0.0.1:1/upload",
+        [formFilePath("file", sourcePath)],
+        headers
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
+
   test "the configured HTTP proxy receives the absolute request URL":
     let proxyServer = newAsyncSocket(buffered = false)
     proxyServer.setSockOpt(OptReuseAddr, true)

@@ -7,7 +7,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | Common request/response/error contracts | Complete | `Future[JResult[T]]`, structured errors, cancellation, deadlines, limits, synchronous and backpressured asynchronous progress consumers |
 | FlowBrigade resilience | Complete | Async retry, circuit breaker, token-bucket rate limit, bulkhead |
 | HTTP(S) and JSON | Complete | Keep-alive reuse, bounded idle pool, streaming limit checks, redirects, typed JSON |
-| Typed query, headers, body APIs | Complete | JSON, URL-encoded form, multipart, raw bytes-as-string |
+| Typed query, headers, body APIs | Complete | JSON, URL-encoded form, buffered multipart, file-backed streaming multipart, raw bytes-as-string |
 | Promise-style composition | Complete | Result-aware `then`, typed `catch`, `finally`, heterogeneous two-operation `all` |
 | NIF/BIF through NIFKit | Deferred | Deliberately postponed |
 | Local IPC | Complete on POSIX | Unix domain sockets with a bounded framed protocol |

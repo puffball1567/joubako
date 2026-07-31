@@ -207,6 +207,18 @@ suite "Multipart bodies":
     let body = encodeMultipart([formField("a", "b")], "boundary")
     check "Content-Type:" notin body
 
+  test "file paths derive a transmitted basename without reading the file":
+    let part = formFilePath("document", "/private/source/report.bin")
+    check part.filename == "report.bin"
+    check part.filePath == "/private/source/report.bin"
+    check part.body == ""
+
+  test "file-backed parts cannot enter the buffered encoder":
+    expect JoubakoError:
+      discard encodeMultipart([
+        formFilePath("document", "/private/source/report.bin")
+      ], "boundary")
+
   test "caller multipart content types are retained":
     var seenType = ""
     let handler = proc(request: Request): Future[Response] {.async.} =
@@ -245,6 +257,30 @@ suite "Multipart bodies":
     check contentType.startsWith("multipart/form-data; boundary=")
     let boundary = contentType.split("boundary=", 1)[1]
     check seenBody.startsWith("--" & boundary & "\r\n")
+
+  test "PUT and PATCH multipart helpers dispatch buffered bodies":
+    var methods: seq[RequestMethod]
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      methods.add request.httpMethod
+      check "name=\"x\"" in request.body
+      return Response(status: 200, request: request)
+    let client = newClient(newInProcessTransport(handler))
+    discard waitFor client.putMultipart("/", [formField("x", "put")])
+    discard waitFor client.patchMultipart("/", [formField("x", "patch")])
+    check methods == @[rmPut, rmPatch]
+
+  test "file-backed multipart is rejected by non-HTTP transports":
+    let client = newClient(newInProcessTransport(
+      proc(request: Request): Future[Response] {.async.} =
+        return Response(status: 200, request: request)
+    ))
+    try:
+      discard waitFor client.postMultipart(
+        "/", [formFilePath("file", "/tmp/not-opened-by-inprocess")]
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
 
 suite "HTTP method helpers":
   test "HEAD and OPTIONS dispatch their methods":
