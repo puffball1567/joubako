@@ -1,0 +1,11 @@
+nimcache/
+nimble.develop
+nimble.paths
+nimbledeps/
+tests/test_all
+tests/test_flowbrigade_dependency
+tests/test_http
+tests/test_retry
+tests/test_types_query
+tests/test_promise
+tests/test_client_json

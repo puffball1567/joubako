@@ -1,0 +1,914 @@
+import std/[asyncdispatch, asyncnet, net, strutils, unittest]
+from std/httpclient import newProxy
+import joubako
+import ./result_test_helpers
+
+proc serveOne(server: AsyncSocket): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+
+  var request = ""
+  while "\r\n\r\n" notin request:
+    let chunk = await socket.recv(4096)
+    if chunk.len == 0:
+      return
+    request.add chunk
+
+  let body = """{"id":7,"name":"HTTP transport"}"""
+  await socket.send(
+    "HTTP/1.1 200 OK\r\n" &
+    "Content-Type: application/json\r\n" &
+    "Content-Length: " & $body.len & "\r\n" &
+    "Connection: close\r\n\r\n" &
+    body
+  )
+
+proc acceptUntilClosed(
+    server: AsyncSocket;
+    accepted: Future[void]
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  accepted.complete()
+  while (await socket.recv(4096)).len > 0:
+    discard
+
+proc serveHeadersThenWait(
+    server: AsyncSocket;
+    contentLength: int
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+
+  var request = ""
+  while "\r\n\r\n" notin request:
+    let chunk = await socket.recv(4096)
+    if chunk.len == 0:
+      return
+    request.add chunk
+
+  await socket.send(
+    "HTTP/1.1 200 OK\r\n" &
+    "Content-Type: text/plain\r\n" &
+    "Content-Length: " & $contentLength & "\r\n" &
+    "Connection: close\r\n\r\n"
+  )
+  while (await socket.recv(4096)).len > 0:
+    discard
+
+proc receiveRequestHeaders(socket: AsyncSocket): Future[bool] {.async.} =
+  var request = ""
+  while "\r\n\r\n" notin request:
+    let chunk = await socket.recv(4096)
+    if chunk.len == 0:
+      return false
+    request.add chunk
+  return true
+
+proc serveCloseDelimitedBody(
+    server: AsyncSocket;
+    body: string
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  if not await socket.receiveRequestHeaders():
+    return
+  await socket.send(
+    "HTTP/1.1 200 OK\r\n" &
+    "Content-Type: text/plain\r\n" &
+    "Connection: close\r\n\r\n" &
+    body
+  )
+
+proc serveChunkedBody(
+    server: AsyncSocket;
+    chunks: seq[string]
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  if not await socket.receiveRequestHeaders():
+    return
+  await socket.send(
+    "HTTP/1.1 200 OK\r\n" &
+    "Content-Type: text/plain\r\n" &
+    "Transfer-Encoding: chunked\r\n" &
+    "Connection: close\r\n\r\n"
+  )
+  for chunk in chunks:
+    await socket.send(toHex(chunk.len) & "\r\n" & chunk & "\r\n")
+  await socket.send("0\r\n\r\n")
+
+proc serveRawResponse(
+    server: AsyncSocket;
+    rawResponse: string
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  if not await socket.receiveRequestHeaders():
+    return
+  await socket.send(rawResponse)
+
+proc serveRedirect(
+    server: AsyncSocket;
+    location: string
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  if not await socket.receiveRequestHeaders():
+    return
+  await socket.send(
+    "HTTP/1.1 302 Found\r\n" &
+    "Location: " & location & "\r\n" &
+    "Content-Length: 0\r\n" &
+    "Connection: close\r\n\r\n"
+  )
+
+proc captureAuthorization(
+    server: AsyncSocket;
+    captured: Future[string]
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  var request = ""
+  while "\r\n\r\n" notin request:
+    let chunk = await socket.recv(4096)
+    if chunk.len == 0:
+      return
+    request.add chunk
+  var authorization = ""
+  for line in request.splitLines:
+    if line.toLowerAscii.startsWith("authorization:"):
+      authorization = line.split(":", 1)[1].strip
+  captured.complete(authorization)
+  await socket.send(
+    "HTTP/1.1 200 OK\r\n" &
+    "Content-Length: 2\r\n" &
+    "Connection: close\r\n\r\nok"
+  )
+
+type CapturedRequest = object
+  requestLine: string
+  headers: string
+  body: string
+
+proc captureRequest(
+    server: AsyncSocket;
+    captured: Future[CapturedRequest];
+    responseBody = "ok"
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  var raw = ""
+  while "\r\n\r\n" notin raw:
+    let chunk = await socket.recv(4096)
+    if chunk.len == 0:
+      return
+    raw.add chunk
+  let splitAt = raw.find("\r\n\r\n")
+  let headerBlock = raw[0 ..< splitAt]
+  var body = raw[splitAt + 4 .. ^1]
+  var contentLength = 0
+  for line in headerBlock.splitLines:
+    if line.toLowerAscii.startsWith("content-length:"):
+      contentLength = line.split(":", 1)[1].strip.parseInt
+  while body.len < contentLength:
+    let chunk = await socket.recv(contentLength - body.len)
+    if chunk.len == 0:
+      break
+    body.add chunk
+  captured.complete(CapturedRequest(
+    requestLine: headerBlock.splitLines[0],
+    headers: headerBlock,
+    body: body
+  ))
+  await socket.send(
+    "HTTP/1.1 200 OK\r\n" &
+    "Content-Length: " & $responseBody.len & "\r\n" &
+    "Connection: close\r\n\r\n" & responseBody
+  )
+
+proc exerciseRedirectMethod(
+    status: int;
+    body: string
+): Future[CapturedRequest] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+  let (_, port) = server.getLocalAddr()
+  proc redirectOnce(): Future[void] {.async.} =
+    let socket = await server.accept()
+    defer:
+      socket.close()
+    if not await socket.receiveRequestHeaders():
+      return
+    await socket.send(
+      "HTTP/1.1 " & $status & " Redirect\r\n" &
+      "Location: /target\r\n" &
+      "Content-Length: 0\r\n" &
+      "Connection: close\r\n\r\n"
+    )
+  let captured = newFuture[CapturedRequest]("test_http.redirectMethod")
+  proc serveBoth(): Future[void] {.async.} =
+    await redirectOnce()
+    await captureRequest(server, captured)
+  let serving = serveBoth()
+  let client = newClient(newHttpTransport())
+  var headers = initHeaders()
+  headers.set("content-type", "text/plain")
+  discard await client.post(
+    "http://127.0.0.1:" & $int(port) & "/start",
+    body,
+    headers
+  )
+  await serving
+  return captured.read
+
+proc exerciseCrossOriginRedirect(): Future[string] {.async.} =
+  let first = newAsyncSocket(buffered = false)
+  let second = newAsyncSocket(buffered = false)
+  for server in [first, second]:
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+  defer:
+    first.close()
+    second.close()
+  let (_, firstPort) = first.getLocalAddr()
+  let (_, secondPort) = second.getLocalAddr()
+  let destination = "http://127.0.0.1:" & $int(secondPort) & "/target"
+  let captured = newFuture[string]("test_http.redirectAuthorization")
+  let redirecting = serveRedirect(first, destination)
+  let capturing = captureAuthorization(second, captured)
+  let client = newClient(newHttpTransport())
+  var headers = initHeaders()
+  headers.set("authorization", "Bearer secret")
+  let response = await client.get(
+    "http://127.0.0.1:" & $int(firstPort) & "/start",
+    headers
+  )
+  await redirecting
+  await capturing
+  check response.body == "ok"
+  return captured.read
+
+proc exerciseCrossOriginSensitiveHeaders(): Future[CapturedRequest] {.async.} =
+  let first = newAsyncSocket(buffered = false)
+  let second = newAsyncSocket(buffered = false)
+  for server in [first, second]:
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+  defer:
+    first.close()
+    second.close()
+  let (_, firstPort) = first.getLocalAddr()
+  let (_, secondPort) = second.getLocalAddr()
+  let destination = "http://127.0.0.1:" & $int(secondPort) & "/target"
+  let captured = newFuture[CapturedRequest]("test_http.sensitiveHeaders")
+  let redirecting = serveRedirect(first, destination)
+  let capturing = captureRequest(second, captured)
+  let client = newClient(newHttpTransport())
+  var headers = initHeaders()
+  headers.set("authorization", "Bearer secret")
+  headers.set("cookie", "session=secret")
+  headers.set("proxy-authorization", "Basic secret")
+  headers.set("host", "forged.invalid")
+  discard await client.get(
+    "http://127.0.0.1:" & $int(firstPort) & "/start",
+    headers
+  )
+  await redirecting
+  await capturing
+  return captured.read
+
+proc exerciseSameOriginRedirect(): Future[string] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+  let (_, port) = server.getLocalAddr()
+  let captured = newFuture[string]("test_http.sameOriginAuthorization")
+  proc serveBoth(): Future[void] {.async.} =
+    await serveRedirect(server, "/target")
+    await captureAuthorization(server, captured)
+  let serving = serveBoth()
+  let client = newClient(newHttpTransport())
+  var headers = initHeaders()
+  headers.set("authorization", "Bearer same-origin")
+  discard await client.get(
+    "http://127.0.0.1:" & $int(port) & "/start",
+    headers
+  )
+  await serving
+  return captured.read
+
+proc requestRaw(
+    rawResponse: string;
+    options = RequestOptions();
+    httpMethod = rmGet
+): Future[Response] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let serving = serveRawResponse(server, rawResponse)
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  try:
+    return await client.request(httpMethod, "raw", options = options)
+  finally:
+    await serving
+
+proc exerciseHeaderDeadline(): Future[ErrorKind] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let accepted = newFuture[void]("test_http.headerDeadlineAccepted")
+  let serving = acceptUntilClosed(server, accepted)
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  var options = defaultRequestOptions()
+  options.timeoutMs = 20
+  let pending = client.get("headers", options = options)
+  await accepted
+
+  try:
+    discard await pending
+  except JoubakoError as error:
+    await serving
+    return error.kind
+  raise newException(AssertionDefect, "request should have timed out")
+
+type
+  User = object
+    id: int
+    name: string
+
+proc exerciseHttpTransport(): Future[void] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let serving = serveOne(server)
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+
+  let user = await client.getJson("users/7", User)
+  await serving
+
+  check user.id == 7
+  check user.name == "HTTP transport"
+
+proc exerciseActiveCancellation(): Future[ErrorKind] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let accepted = newFuture[void]("test_http.accepted")
+  let serving = acceptUntilClosed(server, accepted)
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  let token = newCancellationToken()
+  var options = defaultRequestOptions()
+  options.cancellation = token
+  let pending = client.get("slow", options = options)
+
+  await accepted
+  token.cancel("superseded")
+
+  try:
+    discard await pending
+  except JoubakoError as error:
+    await serving
+    return error.kind
+  raise newException(AssertionDefect, "request should have been cancelled")
+
+proc exerciseBodyDeadline(): Future[ErrorKind] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let serving = serveHeadersThenWait(server, 10)
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  var options = defaultRequestOptions()
+  options.timeoutMs = 50
+
+  try:
+    discard await client.get("slow-body", options = options)
+  except JoubakoError as error:
+    await serving
+    return error.kind
+  raise newException(AssertionDefect, "request should have timed out")
+
+proc exerciseDeclaredBodyLimit(): Future[ErrorKind] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let serving = serveHeadersThenWait(server, 1_000)
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  var options = defaultRequestOptions()
+  options.maxResponseBytes = 10
+
+  try:
+    discard await client.get("large", options = options)
+  except JoubakoError as error:
+    await serving
+    return error.kind
+  raise newException(AssertionDefect, "request should have exceeded its limit")
+
+proc exerciseCloseDelimitedBodyLimit(): Future[ErrorKind] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let serving = serveCloseDelimitedBody(server, "0123456789abcdef")
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  var options = defaultRequestOptions()
+  options.maxResponseBytes = 10
+
+  try:
+    discard await client.get("no-content-length", options = options)
+  except JoubakoError as error:
+    await serving
+    return error.kind
+  raise newException(AssertionDefect, "request should have exceeded its limit")
+
+proc exerciseChunkedBodyLimit(): Future[ErrorKind] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+
+  let (_, port) = server.getLocalAddr()
+  let serving = serveChunkedBody(server, @["12345678", "abcdefgh"])
+  let client = newClient(
+    newHttpTransport(),
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+  var options = defaultRequestOptions()
+  options.maxResponseBytes = 10
+
+  try:
+    discard await client.get("chunked", options = options)
+  except JoubakoError as error:
+    await serving
+    return error.kind
+  raise newException(AssertionDefect, "request should have exceeded its limit")
+
+suite "Joubako HTTP transport":
+  test "performs and decodes a real HTTP request":
+    waitFor exerciseHttpTransport()
+
+  test "active cancellation interrupts an HTTP request":
+    check waitFor(exerciseActiveCancellation()) == jeCancelled
+
+  test "the total deadline includes response body reading":
+    check waitFor(exerciseBodyDeadline()) == jeTimeout
+
+  test "declared oversized bodies are rejected before buffering":
+    check waitFor(exerciseDeclaredBodyLimit()) == jeBodyTooLarge
+
+  test "close-delimited bodies are limited while streaming":
+    check waitFor(exerciseCloseDelimitedBodyLimit()) == jeBodyTooLarge
+
+  test "chunked bodies are limited while streaming":
+    check waitFor(exerciseChunkedBodyLimit()) == jeBodyTooLarge
+
+  test "a body exactly at the configured limit is accepted":
+    var options = defaultRequestOptions()
+    options.maxResponseBytes = 4
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Length: 4\r\n" &
+      "Connection: close\r\n\r\n" &
+      "1234",
+      options
+    )
+    check response.body == "1234"
+
+  test "a valid chunked response is reconstructed":
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Transfer-Encoding: chunked\r\n" &
+      "Connection: close\r\n\r\n" &
+      "3\r\nabc\r\n" &
+      "2\r\nde\r\n" &
+      "0\r\n\r\n"
+    )
+    check response.body == "abcde"
+
+  test "binary NUL bytes are preserved":
+    let body = "a\0b"
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Length: 3\r\n" &
+      "Connection: close\r\n\r\n" &
+      body
+    )
+    check response.body == body
+
+  test "repeated response headers are preserved":
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Set-Cookie: a=1\r\n" &
+      "Set-Cookie: b=2\r\n" &
+      "Content-Length: 0\r\n" &
+      "Connection: close\r\n\r\n"
+    )
+    check response.headers.getAll("set-cookie") == @["a=1", "b=2"]
+
+  test "204 responses complete with an empty body":
+    let response = waitFor requestRaw(
+      "HTTP/1.1 204 No Content\r\n" &
+      "Connection: close\r\n\r\n"
+    )
+    check response.status == 204
+    check response.body == ""
+
+  test "HEAD responses complete without reading a body":
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Length: 12\r\n" &
+      "Connection: close\r\n\r\n",
+      httpMethod = rmHead
+    )
+    check response.status == 200
+    check response.body == ""
+
+  test "HTTP 1.0 close-delimited bodies are read":
+    let response = waitFor requestRaw(
+      "HTTP/1.0 200 OK\r\n" &
+      "Content-Type: text/plain\r\n\r\n" &
+      "legacy"
+    )
+    check response.body == "legacy"
+
+  test "invalid Content-Length becomes a transport error":
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 200 OK\r\n" &
+        "Content-Length: invalid\r\n" &
+        "Connection: close\r\n\r\n"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+
+  test "premature body disconnect becomes a transport error":
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 200 OK\r\n" &
+        "Content-Length: 10\r\n" &
+        "Connection: close\r\n\r\n" &
+        "short"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+
+  test "malformed status lines become transport errors":
+    try:
+      discard waitFor requestRaw(
+        "NOT-HTTP 200 OK\r\n" &
+        "Content-Length: 0\r\n\r\n"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+
+  test "headers without a colon become transport errors":
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 200 OK\r\n" &
+        "Broken Header\r\n\r\n"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+
+  test "invalid chunk sizes become transport errors":
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 200 OK\r\n" &
+        "Transfer-Encoding: chunked\r\n" &
+        "Connection: close\r\n\r\n" &
+        "xyz\r\nbad\r\n"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+
+  test "disconnect before a status line becomes a transport error":
+    try:
+      discard waitFor requestRaw("")
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+
+  test "the total deadline includes waiting for response headers":
+    check waitFor(exerciseHeaderDeadline()) == jeTimeout
+
+  test "cross-origin redirects strip authorization":
+    check waitFor(exerciseCrossOriginRedirect()) == ""
+
+  test "same-origin redirects preserve authorization":
+    check waitFor(exerciseSameOriginRedirect()) == "Bearer same-origin"
+
+  test "read timeout is independent from the total deadline":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveHeadersThenWait(server, 10)
+    let client = newClient(
+      newHttpTransport(),
+      "http://127.0.0.1:" & $int(port) & "/"
+    )
+    var options = defaultRequestOptions()
+    options.timeoutMs = 2_000
+    options.readTimeoutMs = 20
+    try:
+      discard waitFor client.get("slow", options = options)
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTimeout
+      check "body read" in error.msg
+    waitFor serving
+    server.close()
+
+  test "streaming callbacks can consume a body without buffering it":
+    var chunks: seq[string]
+    var progress: seq[int64]
+    var options = defaultRequestOptions()
+    options.streamResponse = true
+    options.onDownloadChunk =
+      proc(chunk: string) = chunks.add chunk
+    options.onDownloadProgress =
+      proc(received, total: int64) =
+        discard total
+        progress.add received
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Length: 6\r\n" &
+      "Connection: close\r\n\r\nabcdef",
+      options
+    )
+    check response.body == ""
+    check chunks.join == "abcdef"
+    check progress.len > 0
+    check progress[^1] == 6
+
+  test "303 redirects rewrite POST to GET and remove body headers":
+    let captured = waitFor exerciseRedirectMethod(303, "payload")
+    check captured.requestLine.startsWith("GET /target ")
+    check captured.body == ""
+    check "content-type:" notin captured.headers.toLowerAscii
+    check "content-length:" notin captured.headers.toLowerAscii
+
+  test "307 redirects preserve POST method and body":
+    let captured = waitFor exerciseRedirectMethod(307, "payload")
+    check captured.requestLine.startsWith("POST /target ")
+    check captured.body == "payload"
+    check "content-type: text/plain" in captured.headers.toLowerAscii
+
+  test "redirects disabled return a structured status error":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveRedirect(server, "/target")
+    let client = newClient(newHttpTransport(maxRedirects = 0))
+    try:
+      discard waitFor client.get(
+        "http://127.0.0.1:" & $int(port) & "/start"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeHttpStatus
+      check error.status == 302
+    waitFor serving
+    server.close()
+
+  test "redirect targets are checked against the host allowlist":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveRedirect(
+      server, "http://localhost:" & $int(port) & "/target"
+    )
+    let client = newClient(newHttpTransport())
+    var options = defaultRequestOptions()
+    options.allowedHosts = @["127.0.0.1"]
+    try:
+      discard waitFor client.get(
+        "http://127.0.0.1:" & $int(port) & "/start",
+        options = options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
+      check "allowlist" in error.msg
+    waitFor serving
+    server.close()
+
+  test "connection/header timeout is independent from total timeout":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let accepted = newFuture[void]("test_http.connectTimeout")
+    let serving = acceptUntilClosed(server, accepted)
+    let client = newClient(newHttpTransport())
+    var options = defaultRequestOptions()
+    options.timeoutMs = 2_000
+    options.connectTimeoutMs = 20
+    let pending = client.get(
+      "http://127.0.0.1:" & $int(port) & "/", options = options
+    )
+    waitFor accepted
+    try:
+      discard waitFor pending
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTimeout
+      check "headers" in error.msg
+    waitFor serving
+    server.close()
+
+  test "upload and download progress report final byte counts":
+    var uploaded = (-1'i64, -1'i64)
+    var downloaded = (-1'i64, -1'i64)
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let captured = newFuture[CapturedRequest]("test_http.progressCapture")
+    let serving = captureRequest(server, captured, "reply")
+    let client = newClient(newHttpTransport())
+    var options = defaultRequestOptions()
+    options.onUploadProgress =
+      proc(transferred, total: int64) = uploaded = (transferred, total)
+    options.onDownloadProgress =
+      proc(transferred, total: int64) = downloaded = (transferred, total)
+    discard waitFor client.post(
+      "http://127.0.0.1:" & $int(port) & "/",
+      "request",
+      options = options
+    )
+    waitFor serving
+    check captured.read.body == "request"
+    check uploaded == (7'i64, 7'i64)
+    check downloaded == (5'i64, 5'i64)
+    server.close()
+
+  test "the configured HTTP proxy receives the absolute request URL":
+    let proxyServer = newAsyncSocket(buffered = false)
+    proxyServer.setSockOpt(OptReuseAddr, true)
+    proxyServer.bindAddr(Port(0), "127.0.0.1")
+    proxyServer.listen()
+    let (_, proxyPort) = proxyServer.getLocalAddr()
+    let captured = newFuture[CapturedRequest]("test_http.proxyCapture")
+    let serving = captureRequest(proxyServer, captured)
+    let proxy = newProxy("http://127.0.0.1:" & $int(proxyPort))
+    let client = newClient(newHttpTransport(proxy = proxy))
+    discard waitFor client.get("http://upstream.invalid/resource?q=1")
+    waitFor serving
+    check captured.read.requestLine.startsWith(
+      "GET http://upstream.invalid/resource?q=1 "
+    )
+    proxyServer.close()
+
+  test "cross-origin redirects strip every sensitive header":
+    let captured = waitFor exerciseCrossOriginSensitiveHeaders()
+    let lowered = captured.headers.toLowerAscii
+    check "authorization:" notin lowered
+    check "cookie:" notin lowered
+    check "proxy-authorization:" notin lowered
+    check "host: forged.invalid" notin lowered
+    check "host: 127.0.0.1:" in lowered
+
+  test "redirect responses without Location are returned for validation":
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 302 Found\r\n" &
+        "Content-Length: 0\r\n" &
+        "Connection: close\r\n\r\n"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeHttpStatus
+      check error.status == 302
+
+  test "streaming limits reject before delivering an overflowing chunk":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveChunkedBody(server, @["1234", "56"])
+    let client = newClient(newHttpTransport())
+    var delivered = ""
+    var options = defaultRequestOptions()
+    options.maxResponseBytes = 4
+    options.streamResponse = true
+    options.onDownloadChunk = proc(chunk: string) = delivered.add chunk
+    try:
+      discard waitFor client.get(
+        "http://127.0.0.1:" & $int(port) & "/",
+        options = options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeBodyTooLarge
+    waitFor serving
+    check delivered == "1234"
+    server.close()
+
+  test "close-delimited progress reports an unknown total":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveCloseDelimitedBody(server, "legacy")
+    let client = newClient(newHttpTransport())
+    var finalProgress = (-1'i64, 0'i64)
+    var options = defaultRequestOptions()
+    options.onDownloadProgress =
+      proc(done, total: int64) = finalProgress = (done, total)
+    discard waitFor client.get(
+      "http://127.0.0.1:" & $int(port) & "/",
+      options = options
+    )
+    waitFor serving
+    check finalProgress == (6'i64, -1'i64)
+    server.close()

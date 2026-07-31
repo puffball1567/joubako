@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main, devel]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Nim ${{ matrix.nim-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        nim-version: ["2.2.0", stable]
+
+    steps:
+      - name: Checkout Joubako
+        uses: actions/checkout@v4
+
+      - name: Checkout FlowBrigade
+        uses: actions/checkout@v4
+        with:
+          repository: puffball1567/flowbrigade
+          ref: v0.5.0
+          path: _deps/flowbrigade
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ matrix.nim-version }}
+
+      - name: Register local FlowBrigade
+        run: nimble develop -y -a:_deps/flowbrigade
+
+      - name: Resolve dependencies
+        run: nimble --legacy --offline setup
+
+      - name: Check package and public entry point
+        run: |
+          nimble check
+          nim check --mm:arc --path:src src/joubako.nim
+
+      - name: Run tests
+        run: nimble --legacy --offline test
+
+  ssl:
+    name: Linux SSL build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Joubako
+        uses: actions/checkout@v4
+
+      - name: Checkout FlowBrigade
+        uses: actions/checkout@v4
+        with:
+          repository: puffball1567/flowbrigade
+          ref: v0.5.0
+          path: _deps/flowbrigade
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+
+      - name: Register local FlowBrigade
+        run: nimble develop -y -a:_deps/flowbrigade
+
+      - name: Build public API with SSL
+        run: nim c -d:ssl --mm:arc --path:src src/joubako.nim
+
+  valgrind:
+    name: Linux Valgrind leak probe
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Joubako
+        uses: actions/checkout@v4
+
+      - name: Checkout FlowBrigade
+        uses: actions/checkout@v4
+        with:
+          repository: puffball1567/flowbrigade
+          ref: v0.5.0
+          path: _deps/flowbrigade
+
+      - name: Setup Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+
+      - name: Register local FlowBrigade
+        run: nimble develop -y -a:_deps/flowbrigade
+
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Run ARC success-path lifecycle leak probe
+        run: nimble --legacy --offline leak

@@ -1,0 +1,355 @@
+# Joubako
+
+Joubako is a typed, asynchronous transport client for native Nim
+applications. It combines the familiar request-client features of libraries
+such as Axios with Nim's native `Future` type and a transport-independent
+design.
+
+Joubako depends on FlowBrigade 0.5 or newer for generic resilience mechanisms
+such as asynchronous retry, backoff, deadlines, circuit breakers, rate limits,
+and bulkheads. HTTP-specific retry classification remains Joubako's
+responsibility.
+
+## Local dependency setup
+
+In this workspace, FlowBrigade is developed in the adjacent `timekeeper`
+directory. Register it as a local Nimble dependency before running the Joubako
+suite:
+
+```sh
+nimble develop -a:../timekeeper
+nimble setup --offline
+nimble test
+```
+
+`nimble.develop` and `nimble.paths` contain machine-specific paths and are
+therefore ignored by Git. Published or separately checked-out builds resolve
+the declared `flowbrigade >= 0.5.0` Nimble dependency normally.
+
+Nimble versions using the experimental vnext resolver may need
+`nimble --legacy --offline setup` when the active Nim compiler is managed by
+Choosenim.
+
+The current implementation includes:
+
+- awaitable HTTP requests returning `Future[JResult[T]]`;
+- `then`, `catch`, `finally`, and `all` composition over the same Result-valued
+  `Future`;
+- typed JSON encoding and decoding;
+- percent-encoded query parameters, including repeated names;
+- synchronous or asynchronous request/response interceptors;
+- HTTP-aware retry using FlowBrigade backoff, deadlines, asynchronous waiting,
+  and observer primitives;
+- structured transport, timeout, cancellation, status, size, and codec errors;
+- default and per-request headers, total deadlines, and body-size limits;
+- separate connection/header and body-read timeouts;
+- redirect credential stripping and optional host allowlists;
+- FlowBrigade circuit-breaker, rate-limit, and bulkhead guards;
+- URL-encoded forms, multipart bodies, authentication helpers, and progress
+  callbacks;
+- pluggable per-request codecs;
+- Unix domain socket, WebSocket, and in-process transports.
+
+## ARC memory model
+
+Joubako is developed and tested with Nim's deterministic ARC memory manager.
+The repository `config.nims` selects `--mm:arc`, and the Valgrind task repeats
+that selection explicitly.
+
+ARC deliberately does not collect reference cycles. Callbacks and interceptors
+that outlive a request therefore must not capture the same async frame or owner
+object that stores them. Put mutable callback state in a separate `ref object`
+and create the callback outside the owning async procedure when necessary.
+The leak probe follows this pattern and fails if a cycle or another allocation
+remains at process exit.
+
+## Await
+
+```nim
+import std/asyncdispatch
+import joubako
+
+type User = object
+  id: int
+  name: string
+
+proc loadUser() {.async.} =
+  let api = newClient(newHttpTransport(), "https://api.example.com/")
+  let outcome = await api.getJson("users/42", User)
+  if outcome.isErr:
+    echo "request failed: ", outcome.error.msg
+    return
+
+  echo outcome.value.name
+```
+
+Joubako represents expected request failures as `JResult.Err`, not as failed
+Futures. The standard Nim `await` is used unchanged: `await` produces a
+`JResult[T]`, and the application checks `isOk` or `isErr` before reading
+`value`. Transport, timeout, cancellation, HTTP status, limit, and codec errors
+are therefore handled in one explicit path. Programming defects remain outside
+this contract.
+
+Independent operations may start together and be awaited as one Result:
+
+```nim
+let combined = await all(
+  api.getJson("users/42", User),
+  api.getJson("teams/7", Team)
+)
+if combined.isOk:
+  echo combined.value.first.name
+  echo combined.value.second.name
+```
+
+## Promise-style callbacks
+
+```nim
+let request = api.getJson("users/42", User)
+  .then(proc(user: User) = render(user))
+  .catch(proc(error: ref JoubakoError) = showError(error.msg))
+  .finally(proc() = stopLoading())
+
+asyncCheck request
+```
+
+`catch` may also recover with a value of the same type:
+
+```nim
+let outcome = await api.getJson("users/42", User)
+  .catch(proc(error: ref JoubakoError): User = cachedUser())
+
+if outcome.isOk:
+  render(outcome.value)
+```
+
+## Query and JSON bodies
+
+```nim
+let matchesResult = await api.getJson(
+  "users",
+  [
+    (name: "role", value: "editor"),
+    (name: "tag", value: "nim"),
+    (name: "tag", value: "native")
+  ],
+  seq[User]
+)
+
+if matchesResult.isErr:
+  showError(matchesResult.error.msg)
+  return
+let matches = matchesResult.value
+
+let createdResult = await api.postJson("users", newUser, User)
+if createdResult.isOk:
+  echo createdResult.value.id
+```
+
+Typed JSON helpers are available for `POST`, `PUT`, and `PATCH`.
+
+## Interceptors
+
+Interceptors run in registration order and may be synchronous or asynchronous.
+Registration returns an ID that can later be ejected.
+
+```nim
+let authInterceptor = api.useRequestInterceptor(
+  proc(request: Request): Request =
+    result = request
+    result.headers.set("authorization", "Bearer " & accessToken)
+)
+
+discard api.useResponseInterceptor(
+  proc(response: Response): Future[Response] {.async.} =
+    await recordMetrics(response)
+    return response
+)
+
+discard api.ejectRequestInterceptor(authInterceptor)
+```
+
+## Deadlines, cancellation, and limits
+
+The total HTTP deadline covers connection, headers, redirects, and
+response-body reading. `connectTimeoutMs` limits connection plus response
+headers, while `readTimeoutMs` limits the wait between body chunks.
+Cancelling a token during an HTTP request closes the active connection.
+Response limits are checked as transport chunks arrive, before each chunk is
+appended to the buffered result; they do not depend on a truthful
+`Content-Length` header.
+
+```nim
+var options = defaultRequestOptions()
+options.timeoutMs = 30_000
+options.connectTimeoutMs = 5_000
+options.readTimeoutMs = 10_000
+options.allowedHosts = @["api.example.com", "*.services.example.com"]
+options.onDownloadProgress =
+  proc(received, total: int64) = echo received, "/", total
+```
+
+Set `streamResponse = true` together with `onDownloadChunk` to consume HTTP
+chunks without retaining them in `Response.body`. The response byte limit is
+still enforced against the cumulative received size.
+
+Automatic redirects are handled by Joubako. `Authorization`, `Cookie`,
+`Proxy-Authorization`, and `Host` are removed whenever a redirect changes
+scheme, host, or effective port. Every redirect target is checked against the
+request host allowlist.
+
+## Retry
+
+Retry is explicit opt-in. Joubako classifies HTTP failures and advances the
+Result-valued attempts, while FlowBrigade supplies backoff, jitter, deadline,
+asynchronous waiting, and observer behavior.
+
+```nim
+var options = defaultRequestOptions()
+options.timeoutMs = 10_000 # total deadline across attempts and waits
+options.retry = defaultHttpRetryOptions() # three attempts by default
+
+let response = await api.get("reports/current", options = options)
+if response.isErr:
+  echo response.error.msg
+```
+
+`GET`, `HEAD`, `PUT`, `DELETE`, and `OPTIONS` are considered idempotent by
+default. `POST` and `PATCH` stop after the first failure unless the caller
+explicitly declares the operation idempotent:
+
+```nim
+options.retry.idempotency = imIdempotent
+let response = await api.post(
+  "documents",
+  replayableBody,
+  options = options
+)
+if response.isErr:
+  echo response.error.msg
+```
+
+The default retryable statuses are `408`, `425`, `429`, `500`, `502`, `503`,
+and `504`; transport and timeout failures are also retryable for idempotent
+requests. Cancellation, invalid input, codec failures, body limits, and other
+HTTP statuses stop immediately. Both delta-seconds and HTTP-date forms of
+`Retry-After` are supported.
+
+```nim
+let token = newCancellationToken()
+var options = defaultRequestOptions()
+options.timeoutMs = 5_000
+options.maxRequestBytes = 2 * 1024 * 1024
+options.maxResponseBytes = 8 * 1024 * 1024
+options.cancellation = token
+
+let pending = api.get("reports/current", options = options)
+token.cancel("selection changed")
+```
+
+## Resilience guards
+
+Retry remains per-request. Circuit breaker, rate limiting, and bulkhead limits
+are optional client-level guards backed by FlowBrigade:
+
+```nim
+import std/times
+
+api.useCircuitBreaker(
+  failureThreshold = 5,
+  resetAfter = initDuration(seconds = 30)
+)
+api.useRateLimit(
+  rate = 20,
+  per = initDuration(seconds = 1),
+  burst = 40
+)
+api.useBulkhead(capacity = 8)
+```
+
+Guard rejection uses the structured `jeCircuitOpen`, `jeRateLimited`, and
+`jeBulkheadRejected` error kinds.
+
+## Forms, multipart, and authentication
+
+```nim
+var headers = initHeaders()
+headers.setBearerToken(accessToken)
+
+let session = await api.postForm("sessions", [
+  (name: "username", value: username),
+  (name: "password", value: password)
+], headers)
+if session.isErr:
+  echo session.error.msg
+
+let upload = await api.postMultipart("documents", [
+  formField("title", title),
+  formFile("document", "report.pdf", pdfBytes, "application/pdf")
+], headers)
+if upload.isErr:
+  echo upload.error.msg
+```
+
+## Local IPC and WebSocket
+
+`UnixIpcTransport` uses a bounded, length-prefixed protocol. The metadata is
+JSON and bodies are Base64 encoded, so binary data is preserved. Applications
+own the listening socket and pass accepted peers to `handleIpcConnection`.
+
+```nim
+let local = newClient(newUnixIpcTransport("/run/my-app/backend.sock"))
+let response = await local.post("/jobs", payload)
+if response.isErr:
+  echo response.error.msg
+```
+
+`WebSocketTransport` performs a standards-based upgrade, masks client frames,
+validates `Sec-WebSocket-Accept`, handles ping/close frames, and enforces
+message limits. `wss` uses certificate verification and requires compiling
+with `-d:ssl`.
+
+```nim
+let socketApi = newClient(newWebSocketTransport())
+let reply = await socketApi.post("wss://events.example.com/rpc", message)
+if reply.isErr:
+  echo reply.error.msg
+```
+
+For a long-lived connection, use `connectWebSocket`, `sendText`,
+`receiveMessage`, and `close` directly.
+
+## Test
+
+```sh
+nimble test
+```
+
+The HTTP integration test binds only to a local loopback socket.
+The IPC tests use a temporary Unix domain socket on POSIX systems.
+CI runs the suite on Linux, macOS, and Windows with Nim 2.2.0 and the current
+stable Nim release. Linux additionally builds the SSL configuration.
+
+The allocation lifecycle probe runs under Valgrind with ARC and
+`-d:useMalloc`, so Nim allocations are visible to Memcheck:
+
+```sh
+nimble leak
+```
+
+It fails on definite, indirect, or possible leaks and exercises repeated
+successful requests, typed JSON decoding, Promise callbacks, interceptors,
+FlowBrigade-backed guards, structured HTTP and transport failures, `all`, and
+discarded callback chains. Public request failures cross an internal settling
+boundary and become `JResult.Err`, so the error-path probe also finishes with
+zero bytes in use under ARC without broad Valgrind suppressions.
+
+## Benchmark
+
+```sh
+nimble benchmark
+```
+
+The local benchmark reports request construction/dispatch, typed JSON decode,
+Promise callback dispatch, and one-failure retry overhead separately from
+network latency.
