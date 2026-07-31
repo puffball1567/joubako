@@ -190,9 +190,34 @@ options.onDownloadProgress =
   proc(received, total: int64) = echo received, "/", total
 ```
 
-Set `streamResponse = true` together with `onDownloadChunk` to consume HTTP
-chunks without retaining them in `Response.body`. The response byte limit is
+Set `streamResponse = true` together with `onDownloadChunk` to consume chunks
+without retaining them in `Response.body`. For asynchronous file or pipeline
+consumers, use `onDownloadChunkAsync`; Joubako awaits each consumer call before
+reading the next chunk, providing backpressure. The response byte limit is
 still enforced against the cumulative received size.
+
+```nim
+var options = defaultRequestOptions()
+options.streamResponse = true
+options.onDownloadChunkAsync =
+  proc(chunk: string): Future[void] {.async.} =
+    await destination.write(chunk)
+
+let outcome = await api.get("exports/current", options = options)
+```
+
+The file helper configures this streaming path and leaves `Response.body`
+empty. A failed download retains the partial file for explicit inspection or
+resume handling:
+
+```nim
+let outcome = await api.downloadToFile(
+  "exports/current",
+  "/var/tmp/current-export.bin"
+)
+if outcome.isErr:
+  echo outcome.error.msg
+```
 
 Automatic redirects are handled by Joubako. `Authorization`, `Cookie`,
 `Proxy-Authorization`, and `Host` are removed whenever a redirect changes

@@ -223,6 +223,8 @@ proc requestResult(
     effectiveOptions.onDownloadProgress = options.onDownloadProgress
   if not options.onDownloadChunk.isNil:
     effectiveOptions.onDownloadChunk = options.onDownloadChunk
+  if not options.onDownloadChunkAsync.isNil:
+    effectiveOptions.onDownloadChunkAsync = options.onDownloadChunkAsync
   if options.streamResponse:
     effectiveOptions.streamResponse = true
 

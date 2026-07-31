@@ -9,6 +9,7 @@ const Magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 type WebSocketProgressCapture = ref object
   chunk: string
+  asyncChunk: string
   uploaded: tuple[done, total: int64]
   downloaded: tuple[done, total: int64]
 
@@ -19,6 +20,11 @@ proc webSocketProgressOptions(
   result.streamResponse = true
   result.onDownloadChunk =
     proc(value: string) = capture.chunk.add value
+  result.onDownloadChunkAsync =
+    proc(value: string): Future[void] =
+      capture.asyncChunk.add value
+      result = newFuture[void]("test.websocketAsyncChunk")
+      result.complete()
   result.onUploadProgress =
     proc(done, total: int64) = capture.uploaded = (done, total)
   result.onDownloadProgress =
@@ -361,6 +367,7 @@ suite "WebSocket transport":
       let response = await client.post(url, "sent", options = options)
       check response.body == ""
       check capture.chunk == "reply"
+      check capture.asyncChunk == "reply"
       check capture.uploaded == (4'i64, 4'i64)
       check capture.downloaded == (5'i64, 5'i64)
     discard waitFor withFrameServer(@[serverFrame("reply")], action)

@@ -4,6 +4,8 @@ import flowbrigade/[backoff, retry]
 type
   ProgressProc* = proc(transferred, total: int64) {.closure.}
   DownloadChunkProc* = proc(chunk: string) {.closure.}
+  AsyncDownloadChunkProc* =
+    proc(chunk: string): Future[void] {.closure.}
 
   IdempotencyMode* = enum
     imDefault,
@@ -52,6 +54,9 @@ type
     onUploadProgress*: ProgressProc
     onDownloadProgress*: ProgressProc
     onDownloadChunk*: DownloadChunkProc
+    ## Awaited before reading the next chunk, providing asynchronous
+    ## backpressure for file and pipeline consumers.
+    onDownloadChunkAsync*: AsyncDownloadChunkProc
     ## Delivers chunks without retaining them in `Response.body`.
     streamResponse*: bool
 
@@ -77,6 +82,7 @@ type
     jeHttpStatus,
     jeBodyTooLarge,
     jeCodec,
+    jeStream,
     jeCircuitOpen,
     jeRateLimited,
     jeBulkheadRejected

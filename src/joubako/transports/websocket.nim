@@ -3,7 +3,7 @@ import std/[asyncdispatch, asyncnet, base64, monotimes, net, strutils, sysrand,
 {.push warning[Deprecated]: off.}
 import std/sha1
 {.pop.}
-import ../[transport, types]
+import ../[chunkconsumer, transport, types]
 
 const WebSocketMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -341,8 +341,7 @@ method send*(
         int64(request.body.len), int64(request.body.len)
       )
     result = await websocket.receiveMessage(limit)
-    if not request.options.onDownloadChunk.isNil:
-      request.options.onDownloadChunk(result)
+    await request.consumeDownloadChunk(result)
     if not request.options.onDownloadProgress.isNil:
       request.options.onDownloadProgress(int64(result.len), int64(result.len))
     if request.options.streamResponse:

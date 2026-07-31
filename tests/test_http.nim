@@ -1,4 +1,4 @@
-import std/[asyncdispatch, asyncnet, net, strutils, unittest]
+import std/[asyncdispatch, asyncnet, net, os, strutils, unittest]
 from std/httpclient import newProxy
 import joubako
 import ./result_test_helpers
@@ -771,6 +771,80 @@ suite "Joubako HTTP transport":
     check chunks.join == "abcdef"
     check progress.len > 0
     check progress[^1] == 6
+
+  test "asynchronous chunk consumers apply backpressure in order":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveChunkedBody(server, @["one", "two", "three"])
+    let client = newClient(newHttpTransport())
+    var events: seq[string]
+    var options = defaultRequestOptions()
+    options.streamResponse = true
+    options.onDownloadChunkAsync =
+      proc(chunk: string): Future[void] {.async.} =
+        events.add("start:" & chunk)
+        await sleepAsync(1)
+        events.add("end:" & chunk)
+    let response = waitFor client.get(
+      "http://127.0.0.1:" & $int(port) & "/",
+      options = options
+    )
+    waitFor serving
+    check response.body == ""
+    check events == @[
+      "start:one", "end:one",
+      "start:two", "end:two",
+      "start:three", "end:three"
+    ]
+    server.close()
+
+  test "asynchronous consumer failures are structured stream errors":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveChunkedBody(server, @["data"])
+    let client = newClient(newHttpTransport())
+    var options = defaultRequestOptions()
+    options.onDownloadChunkAsync =
+      proc(_: string): Future[void] {.async.} =
+        raise newException(IOError, "consumer failed")
+    try:
+      discard waitFor client.get(
+        "http://127.0.0.1:" & $int(port) & "/",
+        options = options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeStream
+    waitFor serving
+    server.close()
+
+  test "downloadToFile streams without retaining the response body":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveChunkedBody(server, @["binary\0", "payload"])
+    let client = newClient(newHttpTransport())
+    let outputPath = getTempDir() /
+      ("joubako-download-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(outputPath):
+        removeFile(outputPath)
+    let response = waitFor client.downloadToFile(
+      "http://127.0.0.1:" & $int(port) & "/",
+      outputPath
+    )
+    waitFor serving
+    check response.body == ""
+    check readFile(outputPath) == "binary\0payload"
+    server.close()
 
   test "303 redirects rewrite POST to GET and remove body headers":
     let captured = waitFor exerciseRedirectMethod(303, "payload")

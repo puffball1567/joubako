@@ -1,6 +1,6 @@
 import std/[asyncdispatch, httpclient, httpcore, strutils, times, uri]
 import flowbrigade/timeout
-import ../[http_retry, transport, types]
+import ../[chunkconsumer, http_retry, transport, types]
 
 type
   PooledConnection = object
@@ -207,8 +207,7 @@ proc readBodyBounded(
       )
 
     received += chunk.len
-    if not request.options.onDownloadChunk.isNil:
-      request.options.onDownloadChunk(chunk)
+    await request.consumeDownloadChunk(chunk)
     if not request.options.streamResponse:
       result.add chunk
     if not request.options.onDownloadProgress.isNil:

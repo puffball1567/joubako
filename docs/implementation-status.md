@@ -4,7 +4,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Common request/response/error contracts | Complete | `Future[JResult[T]]`, structured errors, cancellation, deadlines, limits, progress |
+| Common request/response/error contracts | Complete | `Future[JResult[T]]`, structured errors, cancellation, deadlines, limits, synchronous and backpressured asynchronous progress consumers |
 | FlowBrigade resilience | Complete | Async retry, circuit breaker, token-bucket rate limit, bulkhead |
 | HTTP(S) and JSON | Complete | Keep-alive reuse, bounded idle pool, streaming limit checks, redirects, typed JSON |
 | Typed query, headers, body APIs | Complete | JSON, URL-encoded form, multipart, raw bytes-as-string |
