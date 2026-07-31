@@ -3,10 +3,18 @@ import flowbrigade/timeout
 import ../[http_retry, transport, types]
 
 type
+  PooledConnection = object
+    client: AsyncHttpClient
+    origin: string
+
   HttpTransport* = ref object of Transport
     userAgent*: string
     maxRedirects*: Natural
     proxy*: Proxy
+    ## Maximum number of completed HTTP connections retained for reuse.
+    ## Active requests are not limited; use the client bulkhead for that.
+    maxIdleConnections*: Natural
+    idleConnections: seq[PooledConnection]
 
 proc validateAllowedHost(request: Request; url: Uri) =
   if url.hostname.len == 0:
@@ -47,9 +55,66 @@ func isRedirect(status: int): bool =
 func newHttpTransport*(
     userAgent = "Joubako/0.1";
     maxRedirects: Natural = 5;
-    proxy: Proxy = nil
+    proxy: Proxy = nil;
+    maxIdleConnections: Natural = 8
 ): HttpTransport =
-  HttpTransport(userAgent: userAgent, maxRedirects: maxRedirects, proxy: proxy)
+  HttpTransport(
+    userAgent: userAgent,
+    maxRedirects: maxRedirects,
+    proxy: proxy,
+    maxIdleConnections: maxIdleConnections
+  )
+
+func originKey(url: Uri): string =
+  let scheme = url.scheme.toLowerAscii
+  let port =
+    if url.port.len > 0:
+      url.port
+    elif scheme == "https":
+      "443"
+    else:
+      "80"
+  scheme & "://" & url.hostname.toLowerAscii & ":" & port
+
+proc checkoutConnection(
+    transport: HttpTransport;
+    origin: string
+): PooledConnection =
+  ## Async transports are event-loop local. No yield occurs while the idle
+  ## list is inspected, so checkout is atomic within that event loop.
+  for index in 0 ..< transport.idleConnections.len:
+    if transport.idleConnections[index].origin == origin:
+      result = transport.idleConnections[index]
+      transport.idleConnections.delete(index)
+      return
+  result = PooledConnection(
+    client: newAsyncHttpClient(
+      userAgent = transport.userAgent,
+      maxRedirects = 0,
+      proxy = transport.proxy
+    ),
+    origin: origin
+  )
+
+proc checkinConnection(
+    transport: HttpTransport;
+    connection: sink PooledConnection
+) =
+  if transport.maxIdleConnections == 0 or
+      transport.idleConnections.len >= int(transport.maxIdleConnections):
+    connection.client.close()
+  else:
+    transport.idleConnections.add(move(connection))
+
+proc closeIdleConnections*(transport: HttpTransport) =
+  ## Closes retained keep-alive sockets. Requests currently in progress are
+  ## unaffected and may return their connection to the pool afterwards.
+  for connection in transport.idleConnections.mitems:
+    connection.client.close()
+  transport.idleConnections.setLen(0)
+
+func idleConnectionCount*(transport: HttpTransport): int =
+  transport.idleConnections.len
 
 func toStdMethod(httpMethod: RequestMethod): HttpMethod =
   case httpMethod
@@ -190,6 +255,13 @@ proc performRedirectingRequest(
 ): Future[types.Response] {.async.} =
   var currentUrl = parseUri(request.url)
   request.validateAllowedHost(currentUrl)
+  var connection = transport.checkoutConnection(currentUrl.originKey)
+  var reusable = false
+  defer:
+    if reusable:
+      transport.checkinConnection(move(connection))
+    else:
+      connection.client.close()
   var currentMethod = request.httpMethod
   var currentBody = request.body
   var currentHeaders = initialHeaders
@@ -200,12 +272,8 @@ proc performRedirectingRequest(
       Deadline()
 
   for redirectCount in 0 .. transport.maxRedirects:
-    let client = newAsyncHttpClient(
-      userAgent = transport.userAgent,
-      maxRedirects = 0,
-      proxy = transport.proxy
-    )
-    try:
+    let client = connection.client
+    block:
       var hopRequest = request
       hopRequest.url = $currentUrl
       hopRequest.httpMethod = currentMethod
@@ -270,9 +338,13 @@ proc performRedirectingRequest(
       if not result.status.isRedirect or
           not result.headers.contains("location"):
         result.request = request
+        connection.origin = currentUrl.originKey
+        reusable = true
         return
       if transport.maxRedirects == 0:
         result.request = request
+        connection.origin = currentUrl.originKey
+        reusable = true
         return
       if redirectCount >= transport.maxRedirects:
         raise newJoubakoError(
@@ -298,8 +370,6 @@ proc performRedirectingRequest(
         currentHeaders.del("content-type")
         currentHeaders.del("transfer-encoding")
       currentUrl = nextUrl
-    finally:
-      client.close()
 
 method send*(
     transport: HttpTransport;

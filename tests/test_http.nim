@@ -68,6 +68,53 @@ proc receiveRequestHeaders(socket: AsyncSocket): Future[bool] {.async.} =
     request.add chunk
   return true
 
+proc serveKeepAlivePair(
+    server: AsyncSocket;
+    accepted: Future[int]
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer:
+    socket.close()
+  accepted.complete(1)
+  for index in 0 .. 1:
+    if not await socket.receiveRequestHeaders():
+      return
+    let body = if index == 0: "first" else: "second"
+    let connection = if index == 0: "keep-alive" else: "close"
+    await socket.send(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Length: " & $body.len & "\r\n" &
+      "Connection: " & connection & "\r\n\r\n" &
+      body
+    )
+
+proc exerciseConnectionReuse(): Future[void] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+  let (_, port) = server.getLocalAddr()
+  let accepted = newFuture[int]("test_http.connectionReuseAccepted")
+  let serving = server.serveKeepAlivePair(accepted)
+  let transport = newHttpTransport()
+  let client = newClient(
+    transport,
+    "http://127.0.0.1:" & $int(port) & "/"
+  )
+
+  let first = await client.get("first")
+  let second = await client.get("second")
+  await serving
+
+  check first.body == "first"
+  check second.body == "second"
+  check accepted.read == 1
+  check transport.idleConnectionCount == 1
+  transport.closeIdleConnections()
+  check transport.idleConnectionCount == 0
+
 proc serveCloseDelimitedBody(
     server: AsyncSocket;
     body: string
@@ -521,6 +568,9 @@ proc exerciseChunkedBodyLimit(): Future[ErrorKind] {.async.} =
 suite "Joubako HTTP transport":
   test "performs and decodes a real HTTP request":
     waitFor exerciseHttpTransport()
+
+  test "sequential requests reuse one keep-alive connection":
+    waitFor exerciseConnectionReuse()
 
   test "active cancellation interrupts an HTTP request":
     check waitFor(exerciseActiveCancellation()) == jeCancelled

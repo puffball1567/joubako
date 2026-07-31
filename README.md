@@ -33,6 +33,7 @@ Choosenim.
 The current implementation includes:
 
 - awaitable HTTP requests returning `Future[JResult[T]]`;
+- event-loop-local HTTP keep-alive reuse with a bounded idle pool;
 - `then`, `catch`, `finally`, and `all` composition over the same Result-valued
   `Future`;
 - typed JSON encoding and decoding;
@@ -197,6 +198,20 @@ Automatic redirects are handled by Joubako. `Authorization`, `Cookie`,
 `Proxy-Authorization`, and `Host` are removed whenever a redirect changes
 scheme, host, or effective port. Every redirect target is checked against the
 request host allowlist.
+
+`HttpTransport` retains up to eight completed keep-alive connections by
+default. Concurrent requests never share an active connection; each request
+checks out an idle connection or creates a new one. Set
+`maxIdleConnections = 0` to disable retention, or call
+`closeIdleConnections()` to release currently idle sockets:
+
+```nim
+let transport = newHttpTransport(maxIdleConnections = 16)
+let api = newClient(transport, "https://api.example.com/")
+
+# Later, when the application becomes idle or shuts down:
+transport.closeIdleConnections()
+```
 
 ## Retry
 
