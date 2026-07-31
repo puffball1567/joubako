@@ -8,6 +8,7 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 requires "flowbrigade >= 0.5.0"
+requires "zippy >= 0.10.19"
 
 proc temporary(name: string): string =
   quoteShell(getTempDir() / name)

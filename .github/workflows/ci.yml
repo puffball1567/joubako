@@ -26,13 +26,22 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
+      - name: Checkout Zippy
+        uses: actions/checkout@v4
+        with:
+          repository: guzba/zippy
+          ref: 0.10.19
+          path: _deps/zippy
+
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: ${{ matrix.nim-version }}
 
-      - name: Register local FlowBrigade
-        run: nimble develop -y -a:_deps/flowbrigade
+      - name: Register local dependencies
+        run: |
+          nimble develop -y -a:_deps/flowbrigade
+          nimble develop -y -a:_deps/zippy
 
       - name: Resolve dependencies
         run: nimble --legacy --offline setup
@@ -59,13 +68,22 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
+      - name: Checkout Zippy
+        uses: actions/checkout@v4
+        with:
+          repository: guzba/zippy
+          ref: 0.10.19
+          path: _deps/zippy
+
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: stable
 
-      - name: Register local FlowBrigade
-        run: nimble develop -y -a:_deps/flowbrigade
+      - name: Register local dependencies
+        run: |
+          nimble develop -y -a:_deps/flowbrigade
+          nimble develop -y -a:_deps/zippy
 
       - name: Build public API with SSL
         run: nim c -d:ssl --mm:arc --path:src src/joubako.nim
@@ -84,13 +102,22 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
+      - name: Checkout Zippy
+        uses: actions/checkout@v4
+        with:
+          repository: guzba/zippy
+          ref: 0.10.19
+          path: _deps/zippy
+
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
           nim-version: stable
 
-      - name: Register local FlowBrigade
-        run: nimble develop -y -a:_deps/flowbrigade
+      - name: Register local dependencies
+        run: |
+          nimble develop -y -a:_deps/flowbrigade
+          nimble develop -y -a:_deps/zippy
 
       - name: Install Valgrind
         run: |

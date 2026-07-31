@@ -8,13 +8,15 @@ design.
 Joubako depends on FlowBrigade 0.5 or newer for generic resilience mechanisms
 such as asynchronous retry, backoff, deadlines, circuit breakers, rate limits,
 and bulkheads. HTTP-specific retry classification remains Joubako's
-responsibility.
+responsibility. Zippy 0.10.19 or newer supplies compression primitives.
+Third-party attribution is collected in
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
 ## Local dependency setup
 
 In this workspace, FlowBrigade is developed in the adjacent `timekeeper`
 directory. Register it as a local Nimble dependency before running the Joubako
-suite:
+suite. Zippy is resolved through Nimble unless it is also registered locally:
 
 ```sh
 nimble develop -a:../timekeeper
@@ -24,7 +26,7 @@ nimble test
 
 `nimble.develop` and `nimble.paths` contain machine-specific paths and are
 therefore ignored by Git. Published or separately checked-out builds resolve
-the declared `flowbrigade >= 0.5.0` Nimble dependency normally.
+the declared FlowBrigade and Zippy Nimble dependencies normally.
 
 Nimble versions using the experimental vnext resolver may need
 `nimble --legacy --offline setup` when the active Nim compiler is managed by
