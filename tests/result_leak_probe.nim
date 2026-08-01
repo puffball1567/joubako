@@ -15,6 +15,13 @@ proc safeError(index: int): Future[JResult[int]] =
     newJoubakoError(jeTransport, "safe failure " & $index)
   ))
 
+proc recoverOne(error: ref JoubakoError): Future[JResult[int]] =
+  doAssert error.kind == jeTransport
+  completedResult(ok(1))
+
+proc cleanupOk(): Future[JResult[void]] =
+  completedResult(ok())
+
 proc consumeChunk(_: string): Future[void] =
   result = newFuture[void]("resultLeak.consumeChunk")
   result.complete()
@@ -69,6 +76,14 @@ proc main(): Future[void] {.async.} =
     let recovered = await recovery
     doAssert recovered.isOk
     doAssert recovered.value == index
+
+    let asyncRecovered = await safeError(index).catch(recoverOne)
+    doAssert asyncRecovered.isOk
+    doAssert asyncRecovered.value == 1
+
+    let asyncFinalized = await safeValue(index).finally(cleanupOk)
+    doAssert asyncFinalized.isOk
+    doAssert asyncFinalized.value == index
 
     let response = await client.get("missing")
     doAssert response.isErr

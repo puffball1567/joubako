@@ -149,6 +149,24 @@ if outcome.isOk:
   render(outcome.value)
 ```
 
+Asynchronous `then`, `catch`, and `finally` callbacks return another
+`Future[JResult[T]]`. The chain waits for and flattens that Future, so recovery
+and cleanup can perform non-blocking work without nesting callbacks:
+
+```nim
+let outcome = await api.getJson("users/42", User)
+  .catch(proc(error: ref JoubakoError): Future[JResult[User]] =
+    cachedUserAsync(error)
+  )
+  .finally(proc(): Future[JResult[void]] =
+    stopLoadingAsync()
+  )
+```
+
+An asynchronous callback that raises, returns an error Result, or incorrectly
+returns a nil Future completes the outer chain with `JResult.Err`; it does not
+create an unobserved failed Future.
+
 ## Query and JSON bodies
 
 ```nim

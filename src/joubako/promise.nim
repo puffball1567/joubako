@@ -15,6 +15,12 @@ proc callbackFailure(error: ref Exception): ref JoubakoError =
   error.asJoubakoError(jeCodec, "")
 
 proc forward[T](source: Future[JResult[T]]; destination: Future[JResult[T]]) =
+  if source.isNil:
+    destination.complete(err[T](newJoubakoError(
+      jeCodec,
+      "asynchronous Promise callback returned a nil Future"
+    )))
+    return
   source.addResultCallback(proc() =
     if destination.finished:
       return
@@ -175,6 +181,49 @@ proc catch*[T](
   let callback = proc(error: ref JoubakoError): T = onRejected(error)
   catchClosure(source, callback)
 
+proc catchAsyncClosure[T](
+    source: Future[JResult[T]];
+    onRejected: proc(error: ref JoubakoError): Future[JResult[T]] {.closure.}
+): Future[JResult[T]] =
+  result = newFuture[JResult[T]]("Joubako.catchAsync")
+  let destination = result
+  source.addResultCallback(proc() =
+    if destination.finished:
+      return
+    if source.failed:
+      var failure = move(source.error)
+      source.errorStackTrace.setLen(0)
+      destination.complete(err[T](failure.callbackFailure()))
+      return
+    let outcome = source.read()
+    if outcome.isOk:
+      destination.complete(outcome)
+      return
+    try:
+      onRejected(outcome.error).forward(destination)
+    except CatchableError as error:
+      destination.complete(err[T](error.callbackFailure()))
+  )
+
+proc catch*[T](
+    source: Future[JResult[T]];
+    onRejected: proc(
+      error: ref JoubakoError
+    ): Future[JResult[T]] {.closure.}
+): Future[JResult[T]] {.discardable.} =
+  catchAsyncClosure(source, onRejected)
+
+proc catch*[T](
+    source: Future[JResult[T]];
+    onRejected: proc(
+      error: ref JoubakoError
+    ): Future[JResult[T]] {.nimcall.}
+): Future[JResult[T]] {.discardable.} =
+  let callback = proc(
+    error: ref JoubakoError
+  ): Future[JResult[T]] = onRejected(error)
+  catchAsyncClosure(source, callback)
+
 proc catchVoidClosure(
     source: Future[JResult[void]];
     onRejected: proc(error: ref JoubakoError) {.closure.}
@@ -248,6 +297,61 @@ proc `finally`*[T](
 ): Future[JResult[T]] {.discardable.} =
   let callback = proc() = onFinally()
   finallyClosure(source, callback)
+
+proc finallyAsyncClosure[T](
+    source: Future[JResult[T]];
+    onFinally: proc(): Future[JResult[void]] {.closure.}
+): Future[JResult[T]] =
+  result = newFuture[JResult[T]]("Joubako.finallyAsync")
+  let destination = result
+  source.addResultCallback(proc() =
+    if destination.finished:
+      return
+    var outcome: JResult[T]
+    if source.failed:
+      var failure = move(source.error)
+      source.errorStackTrace.setLen(0)
+      outcome = err[T](failure.callbackFailure())
+    else:
+      outcome = source.read()
+    try:
+      let cleanup = onFinally()
+      if cleanup.isNil:
+        destination.complete(err[T](newJoubakoError(
+          jeCodec,
+          "asynchronous finally callback returned a nil Future"
+        )))
+        return
+      cleanup.addResultCallback(proc() =
+        if destination.finished:
+          return
+        if cleanup.failed:
+          var failure = move(cleanup.error)
+          cleanup.errorStackTrace.setLen(0)
+          destination.complete(err[T](failure.callbackFailure()))
+          return
+        let cleanupOutcome = cleanup.read()
+        if cleanupOutcome.isErr:
+          destination.complete(err[T](cleanupOutcome.error))
+        else:
+          destination.complete(outcome)
+      )
+    except CatchableError as error:
+      destination.complete(err[T](error.callbackFailure()))
+  )
+
+proc `finally`*[T](
+    source: Future[JResult[T]];
+    onFinally: proc(): Future[JResult[void]] {.closure.}
+): Future[JResult[T]] {.discardable.} =
+  finallyAsyncClosure(source, onFinally)
+
+proc `finally`*[T](
+    source: Future[JResult[T]];
+    onFinally: proc(): Future[JResult[void]] {.nimcall.}
+): Future[JResult[T]] {.discardable.} =
+  let callback = proc(): Future[JResult[void]] = onFinally()
+  finallyAsyncClosure(source, callback)
 
 type PairState[A, B] = ref object
   destination: Future[JResult[tuple[first: A, second: B]]]
