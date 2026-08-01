@@ -26,12 +26,34 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
-      - name: Checkout Zippy
+      - name: Checkout nim-zlib
         uses: actions/checkout@v4
         with:
-          repository: guzba/zippy
-          ref: 0.10.19
-          path: _deps/zippy
+          repository: status-im/nim-zlib
+          ref: v0.2.0
+          path: _deps/zlib
+          submodules: recursive
+
+      - name: Checkout zlib Nim dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-stew
+          ref: v0.4.2
+          path: _deps/stew
+
+      - name: Checkout results
+        uses: actions/checkout@v4
+        with:
+          repository: arnetheduck/nim-results
+          ref: v0.5.1
+          path: _deps/results
+
+      - name: Checkout unittest2
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-unittest2
+          ref: v0.2.5
+          path: _deps/unittest2
 
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
@@ -41,7 +63,10 @@ jobs:
       - name: Register local dependencies
         run: |
           nimble develop -y -a:_deps/flowbrigade
-          nimble develop -y -a:_deps/zippy
+          nimble develop -y -a:_deps/results
+          nimble develop -y -a:_deps/unittest2
+          nimble develop -y -a:_deps/stew
+          nimble develop -y -a:_deps/zlib
 
       - name: Resolve dependencies
         run: nimble --legacy --offline setup
@@ -68,12 +93,34 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
-      - name: Checkout Zippy
+      - name: Checkout nim-zlib
         uses: actions/checkout@v4
         with:
-          repository: guzba/zippy
-          ref: 0.10.19
-          path: _deps/zippy
+          repository: status-im/nim-zlib
+          ref: v0.2.0
+          path: _deps/zlib
+          submodules: recursive
+
+      - name: Checkout zlib Nim dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-stew
+          ref: v0.4.2
+          path: _deps/stew
+
+      - name: Checkout results
+        uses: actions/checkout@v4
+        with:
+          repository: arnetheduck/nim-results
+          ref: v0.5.1
+          path: _deps/results
+
+      - name: Checkout unittest2
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-unittest2
+          ref: v0.2.5
+          path: _deps/unittest2
 
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
@@ -83,7 +130,10 @@ jobs:
       - name: Register local dependencies
         run: |
           nimble develop -y -a:_deps/flowbrigade
-          nimble develop -y -a:_deps/zippy
+          nimble develop -y -a:_deps/results
+          nimble develop -y -a:_deps/unittest2
+          nimble develop -y -a:_deps/stew
+          nimble develop -y -a:_deps/zlib
 
       - name: Build public API with SSL
         run: nim c -d:ssl --mm:arc --path:src src/joubako.nim
@@ -102,12 +152,34 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
-      - name: Checkout Zippy
+      - name: Checkout nim-zlib
         uses: actions/checkout@v4
         with:
-          repository: guzba/zippy
-          ref: 0.10.19
-          path: _deps/zippy
+          repository: status-im/nim-zlib
+          ref: v0.2.0
+          path: _deps/zlib
+          submodules: recursive
+
+      - name: Checkout zlib Nim dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-stew
+          ref: v0.4.2
+          path: _deps/stew
+
+      - name: Checkout results
+        uses: actions/checkout@v4
+        with:
+          repository: arnetheduck/nim-results
+          ref: v0.5.1
+          path: _deps/results
+
+      - name: Checkout unittest2
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-unittest2
+          ref: v0.2.5
+          path: _deps/unittest2
 
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
@@ -117,7 +189,10 @@ jobs:
       - name: Register local dependencies
         run: |
           nimble develop -y -a:_deps/flowbrigade
-          nimble develop -y -a:_deps/zippy
+          nimble develop -y -a:_deps/results
+          nimble develop -y -a:_deps/unittest2
+          nimble develop -y -a:_deps/stew
+          nimble develop -y -a:_deps/zlib
 
       - name: Install Valgrind
         run: |

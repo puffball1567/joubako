@@ -8,7 +8,8 @@ design.
 Joubako depends on FlowBrigade 0.5 or newer for generic resilience mechanisms
 such as asynchronous retry, backoff, deadlines, circuit breakers, rate limits,
 and bulkheads. HTTP-specific retry classification remains Joubako's
-responsibility. Zippy 0.10.19 or newer supplies compression primitives.
+responsibility. Joubako builds bounded streaming gzip and deflate decoding on
+nim-zlib 0.2 or newer and its bundled zlib implementation.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
@@ -16,7 +17,8 @@ Third-party attribution is collected in
 
 In this workspace, FlowBrigade is developed in the adjacent `timekeeper`
 directory. Register it as a local Nimble dependency before running the Joubako
-suite. Zippy is resolved through Nimble unless it is also registered locally:
+suite. nim-zlib and its transitive dependencies are resolved through Nimble
+unless they are also registered locally:
 
 ```sh
 nimble develop -a:../timekeeper
@@ -26,7 +28,7 @@ nimble test
 
 `nimble.develop` and `nimble.paths` contain machine-specific paths and are
 therefore ignored by Git. Published or separately checked-out builds resolve
-the declared FlowBrigade and Zippy Nimble dependencies normally.
+the declared FlowBrigade and nim-zlib Nimble dependencies normally.
 
 Nimble versions using the experimental vnext resolver may need
 `nimble --legacy --offline setup` when the active Nim compiler is managed by
@@ -36,6 +38,7 @@ The current implementation includes:
 
 - awaitable HTTP requests returning `Future[JResult[T]]`;
 - event-loop-local HTTP keep-alive reuse with a bounded idle pool;
+- bounded streaming gzip and deflate response decoding;
 - `then`, `catch`, `finally`, and `all` composition over the same Result-valued
   `Future`;
 - typed JSON encoding and decoding;

@@ -92,6 +92,7 @@ type
     jeHttpStatus,
     jeBodyTooLarge,
     jeCodec,
+    jeCompression,
     jeStream,
     jeCircuitOpen,
     jeRateLimited,

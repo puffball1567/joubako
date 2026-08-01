@@ -200,18 +200,77 @@ under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 
-## Zippy
+## nim-zlib
 
-- Version: 0.10.19 or later compatible release
-- Source: https://github.com/guzba/zippy
-- Copyright: Copyright (c) 2020 Ryan Oldenburg
+- Version: 0.2.0 or later compatible release
+- Source: https://github.com/status-im/nim-zlib
+- Copyright: Copyright (c) 2018 Status Research & Development GmbH
+- License: MIT License or Apache License 2.0
+
+Joubako imports nim-zlib's low-level streaming API. The package compiles its
+pinned copy of upstream zlib into the application.
+
+## zlib
+
+- Version: 1.3.1 (vendored by nim-zlib 0.2.0)
+- Source: https://github.com/madler/zlib
+- Copyright: Copyright (C) 1995-2022 Jean-loup Gailly and Mark Adler
+- License: zlib License
+
+### zlib License
+
+Copyright (C) 1995-2022 Jean-loup Gailly and Mark Adler
+
+This software is provided 'as-is', without any express or implied warranty.
+In no event will the authors be held liable for any damages arising from the
+use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not claim
+   that you wrote the original software. If you use this software in a
+   product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+
+Jean-loup Gailly, jloup@gzip.org
+
+Mark Adler, madler@alumni.caltech.edu
+
+## Nim package-resolution dependencies
+
+The following packages are transitive dependencies declared by nim-zlib. The
+Joubako compression implementation imports none of their modules directly,
+but they are recorded here because Nimble resolves them as part of the package
+graph.
+
+### Stew
+
+- Version: 0.4.2
+- Source: https://github.com/status-im/nim-stew
+- Copyright: Status Research & Development GmbH and contributors
+- License: MIT License or Apache License 2.0
+
+### results
+
+- Version: 0.5.1
+- Source: https://github.com/arnetheduck/nim-results
+- Copyright: Copyright (c) 2018 Status Research & Development GmbH
+- License: MIT License or Apache License 2.0
+
+### unittest2
+
+- Version: 0.2.5
+- Source: https://github.com/status-im/nim-unittest2
+- Copyright: Copyright (c) 2011-2018 Zahary Karadjov; Copyright (c)
+  2018-2019 Ștefan Talpalaru
 - License: MIT License
 
-Zippy is used for compression and decompression primitives.
-
 ### MIT License
-
-Copyright (c) 2020 Ryan Oldenburg
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

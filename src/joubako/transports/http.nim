@@ -1,6 +1,6 @@
 import std/[asyncdispatch, httpclient, httpcore, os, strutils, times, uri]
 import flowbrigade/timeout
-import ../[chunkconsumer, http_retry, result, transport, types]
+import ../[chunkconsumer, compression, http_retry, result, transport, types]
 
 type
   PooledConnection = object
@@ -51,6 +51,11 @@ func redirectedUrl(current: Uri; location: string): Uri =
 
 func isRedirect(status: int): bool =
   status in [301, 302, 303, 307, 308]
+
+func hasResponseBody(request: Request; status: int): bool =
+  request.httpMethod != rmHead and
+    status notin 100 .. 199 and
+    status notin [204, 304]
 
 func newHttpTransport*(
     userAgent = "Joubako/0.1";
@@ -210,14 +215,43 @@ proc readBodyBounded(
   ## keeps an untrusted response from being fully materialized before the
   ## configured limit is enforced.
   let limit = request.options.maxResponseBytes
+  let contentEncoding: string =
+    response.headers.getOrDefault("content-encoding")
+  let decoder = newContentDecoder(
+    if request.hasResponseBody(int(response.code)): contentEncoding else: "",
+    limit,
+    request.url,
+    int(response.code)
+  )
+  defer:
+    decoder.close()
   var received = 0
   var total = -1'i64
+  var body: string
   let declaredLength = response.headers.getOrDefault("content-length")
-  if declaredLength.len > 0:
+  if decoder == nil and declaredLength.len > 0:
     try:
       total = declaredLength.parseBiggestInt
     except ValueError:
       discard
+
+  proc deliver(chunk: string): Future[void] {.async.} =
+    if limit >= 0 and
+        (received > limit or chunk.len > limit - received):
+      client.close()
+      raise newJoubakoError(
+        jeBodyTooLarge,
+        "response body exceeded the configured limit while streaming",
+        request.url,
+        int(response.code)
+      )
+    received += chunk.len
+    await request.consumeDownloadChunk(chunk)
+    if not request.options.streamResponse:
+      body.add chunk
+    if not request.options.onDownloadProgress.isNil:
+      request.options.onDownloadProgress(int64(received), total)
+
   while true:
     let reading = response.bodyStream.read()
     var waitMs = request.options.readTimeoutMs
@@ -271,21 +305,19 @@ proc readBodyBounded(
     if not hasValue:
       break
 
-    if limit >= 0 and (received > limit or chunk.len > limit - received):
-      client.close()
-      raise newJoubakoError(
-        jeBodyTooLarge,
-        "response body exceeded the configured limit while streaming",
-        request.url,
-        int(response.code)
+    if decoder == nil:
+      await deliver(chunk)
+    else:
+      let decoded = await settle(
+        fallible(decoder.decode(chunk, deliver)),
+        jeCompression,
+        request.url
       )
+      if decoded.isErr:
+        raise decoded.error
 
-    received += chunk.len
-    await request.consumeDownloadChunk(chunk)
-    if not request.options.streamResponse:
-      result.add chunk
-    if not request.options.onDownloadProgress.isNil:
-      request.options.onDownloadProgress(int64(received), total)
+  decoder.finish()
+  return body
 
 proc buildResponse(
     client: AsyncHttpClient;
@@ -293,7 +325,12 @@ proc buildResponse(
     request: Request;
     deadline: Deadline
 ): Future[types.Response] {.async.} =
-  if request.options.maxResponseBytes >= 0:
+  let contentEncoding: string =
+    raw.headers.getOrDefault("content-encoding")
+  let decoded = request.hasResponseBody(int(raw.code)) and
+    contentEncoding.isCompressedEncoding
+  if request.options.maxResponseBytes >= 0 and
+      not decoded:
     let declaredLength = raw.headers.getOrDefault("content-length")
     if declaredLength.len > 0:
       try:
@@ -311,7 +348,9 @@ proc buildResponse(
 
   var responseHeaders = initHeaders()
   for name, value in raw.headers.pairs:
-    responseHeaders.add(name, value)
+    if not decoded or
+        name.toLowerAscii notin ["content-encoding", "content-length"]:
+      responseHeaders.add(name, value)
 
   return types.Response(
     status: int(raw.code),
@@ -473,6 +512,8 @@ method send*(
   var stdHeaders = newHttpHeaders()
   for name, value in request.headers.pairs:
     stdHeaders.add(name, value)
+  if not request.headers.contains("accept-encoding"):
+    stdHeaders.add("accept-encoding", "gzip, deflate")
 
   try:
     let pending = transport.performRedirectingRequest(request, stdHeaders)

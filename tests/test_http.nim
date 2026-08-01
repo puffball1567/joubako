@@ -1,6 +1,7 @@
 import std/[asyncdispatch, asyncnet, net, os, strutils, unittest]
 from std/httpclient import newProxy
 import joubako
+import ./compression_test_helpers
 import ./result_test_helpers
 
 proc serveOne(server: AsyncSocket): Future[void] {.async.} =
@@ -586,6 +587,119 @@ suite "Joubako HTTP transport":
 
   test "chunked bodies are limited while streaming":
     check waitFor(exerciseChunkedBodyLimit()) == jeBodyTooLarge
+
+  test "gzip responses are decoded before delivery":
+    let body = "compressed HTTP response\0body"
+    let encoded = body.gzipForTest
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Encoding: gzip\r\n" &
+      "Content-Length: " & $encoded.len & "\r\n" &
+      "Connection: close\r\n\r\n" & encoded
+    )
+    check response.body == body
+    check not response.headers.contains("content-encoding")
+    check not response.headers.contains("content-length")
+
+  test "the response limit applies to decompressed bytes":
+    let body = repeat('A', 128 * 1024)
+    let encoded = body.gzipForTest
+    var options = defaultRequestOptions()
+    options.maxResponseBytes = 1024
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 200 OK\r\n" &
+        "Content-Encoding: gzip\r\n" &
+        "Content-Length: " & $encoded.len & "\r\n" &
+        "Connection: close\r\n\r\n" & encoded,
+        options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeBodyTooLarge
+
+  test "stream consumers receive decoded chunks with decoded progress":
+    let body = repeat("decoded-stream-", 3000)
+    let encoded = body.gzipForTest
+    var delivered: string
+    var progress = (-1'i64, 0'i64)
+    var options = defaultRequestOptions()
+    options.streamResponse = true
+    options.onDownloadChunk = proc(chunk: string) = delivered.add chunk
+    options.onDownloadProgress =
+      proc(transferred, total: int64) = progress = (transferred, total)
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Encoding: gzip\r\n" &
+      "Content-Length: " & $encoded.len & "\r\n" &
+      "Connection: close\r\n\r\n" & encoded,
+      options
+    )
+    check response.body == ""
+    check delivered == body
+    check progress == (int64(body.len), -1'i64)
+
+  test "corrupt compressed HTTP bodies are structured errors":
+    var encoded = gzipForTest("broken checksum")
+    encoded[^5] = char(uint8(encoded[^5]) xor 0xff'u8)
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 200 OK\r\n" &
+        "Content-Encoding: gzip\r\n" &
+        "Content-Length: " & $encoded.len & "\r\n" &
+        "Connection: close\r\n\r\n" & encoded
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeCompression
+
+  test "HTTP requests advertise supported response encodings":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let captured = newFuture[CapturedRequest]("test_http.acceptEncoding")
+    let serving = captureRequest(server, captured)
+    let client = newClient(newHttpTransport())
+    discard waitFor client.get("http://127.0.0.1:" & $int(port) & "/")
+    waitFor serving
+    check "accept-encoding: gzip, deflate" in
+      captured.read.headers.toLowerAscii
+    server.close()
+
+  test "caller-supplied Accept-Encoding is not overwritten":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let captured = newFuture[CapturedRequest]("test_http.customEncoding")
+    let serving = captureRequest(server, captured)
+    let client = newClient(newHttpTransport())
+    var headers = initHeaders()
+    headers.set("accept-encoding", "identity")
+    discard waitFor client.get(
+      "http://127.0.0.1:" & $int(port) & "/",
+      headers
+    )
+    waitFor serving
+    check "accept-encoding: identity" in captured.read.headers.toLowerAscii
+    check "accept-encoding: gzip, deflate" notin
+      captured.read.headers.toLowerAscii
+    server.close()
+
+  test "HEAD metadata is not treated as a compressed response body":
+    let response = waitFor requestRaw(
+      "HTTP/1.1 200 OK\r\n" &
+      "Content-Encoding: gzip\r\n" &
+      "Content-Length: 123\r\n" &
+      "Connection: close\r\n\r\n",
+      httpMethod = rmHead
+    )
+    check response.body == ""
+    check response.headers.get("content-encoding") == "gzip"
+    check response.headers.get("content-length") == "123"
 
   test "a body exactly at the configured limit is accepted":
     var options = defaultRequestOptions()
