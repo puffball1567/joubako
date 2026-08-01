@@ -283,6 +283,63 @@ proc exerciseRedirectMethod(
   await serving
   return captured.read
 
+proc exerciseRedirectCookie(): Future[CapturedRequest] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+  let (_, port) = server.getLocalAddr()
+  proc redirectOnce(): Future[void] {.async.} =
+    let socket = await server.accept()
+    defer:
+      socket.close()
+    if not await socket.receiveRequestHeaders():
+      return
+    await socket.send(
+      "HTTP/1.1 302 Found\r\n" &
+      "Location: /target\r\n" &
+      "Set-Cookie: session=redirected; Path=/target; HttpOnly\r\n" &
+      "Content-Length: 0\r\n" &
+      "Connection: close\r\n\r\n"
+    )
+  let captured = newFuture[CapturedRequest]("test_http.redirectCookie")
+  proc serveBoth(): Future[void] {.async.} =
+    await redirectOnce()
+    await captureRequest(server, captured)
+  let serving = serveBoth()
+  let jar = newCookieJar()
+  let client = newClient(newHttpTransport(cookieJar = jar))
+  discard await client.get(
+    "http://127.0.0.1:" & $int(port) & "/start"
+  )
+  await serving
+  return captured.read
+
+proc exerciseExplicitCookie(): Future[CapturedRequest] {.async.} =
+  let server = newAsyncSocket(buffered = false)
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(0), "127.0.0.1")
+  server.listen()
+  defer:
+    server.close()
+  let (_, port) = server.getLocalAddr()
+  let captured = newFuture[CapturedRequest]("test_http.explicitCookie")
+  let serving = captureRequest(server, captured)
+  let jar = newCookieJar()
+  discard jar.store(
+    "http://127.0.0.1:" & $int(port) & "/", "session=jar; Path=/"
+  )
+  let client = newClient(newHttpTransport(cookieJar = jar))
+  var headers = initHeaders()
+  headers.set("cookie", "session=explicit")
+  discard await client.get(
+    "http://127.0.0.1:" & $int(port) & "/", headers
+  )
+  await serving
+  return captured.read
+
 proc exerciseCrossOriginRedirect(): Future[string] {.async.} =
   let first = newAsyncSocket(buffered = false)
   let second = newAsyncSocket(buffered = false)
@@ -972,6 +1029,16 @@ suite "Joubako HTTP transport":
     check captured.requestLine.startsWith("POST /target ")
     check captured.body == "payload"
     check "content-type: text/plain" in captured.headers.toLowerAscii
+
+  test "redirect Set-Cookie fields apply to the next hop":
+    let captured = waitFor exerciseRedirectCookie()
+    check "cookie: session=redirected" in captured.headers.toLowerAscii
+
+  test "explicit Cookie headers override the configured jar":
+    let captured = waitFor exerciseExplicitCookie()
+    let lowered = captured.headers.toLowerAscii
+    check "cookie: session=explicit" in lowered
+    check "cookie: session=jar" notin lowered
 
   test "redirects disabled return a structured status error":
     let server = newAsyncSocket(buffered = false)

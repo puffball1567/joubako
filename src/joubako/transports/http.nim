@@ -1,6 +1,7 @@
 import std/[asyncdispatch, httpclient, httpcore, os, strutils, times, uri]
 import flowbrigade/timeout
-import ../[chunkconsumer, compression, http_retry, result, transport, types]
+import ../[chunkconsumer, compression, cookiejar, http_retry, result,
+  transport, types]
 
 type
   PooledConnection = object
@@ -14,6 +15,7 @@ type
     ## Maximum number of completed HTTP connections retained for reuse.
     ## Active requests are not limited; use the client bulkhead for that.
     maxIdleConnections*: Natural
+    cookieJar*: CookieJar
     idleConnections: seq[PooledConnection]
 
 proc validateAllowedHost(request: Request; url: Uri) =
@@ -61,13 +63,15 @@ func newHttpTransport*(
     userAgent = "Joubako/0.1";
     maxRedirects: Natural = 5;
     proxy: Proxy = nil;
-    maxIdleConnections: Natural = 8
+    maxIdleConnections: Natural = 8;
+    cookieJar: CookieJar = nil
 ): HttpTransport =
   HttpTransport(
     userAgent: userAgent,
     maxRedirects: maxRedirects,
     proxy: proxy,
-    maxIdleConnections: maxIdleConnections
+    maxIdleConnections: maxIdleConnections,
+    cookieJar: cookieJar
   )
 
 func originKey(url: Uri): string =
@@ -399,13 +403,21 @@ proc performRedirectingRequest(
       hopRequest.body = currentBody
       hopRequest.multipartParts = currentMultipartParts
 
+      var hopHeaders = newHttpHeaders()
+      for name, value in currentHeaders.pairs:
+        hopHeaders.add(name, value)
+      if transport.cookieJar != nil and not hopHeaders.hasKey("cookie"):
+        let cookies = transport.cookieJar.cookieHeader(hopRequest.url)
+        if cookies.len > 0:
+          hopHeaders.add("cookie", cookies)
+
       client.headers = newHttpHeaders()
       let multipart = hopRequest.buildMultipart()
       let pendingHeaders = client.request(
         hopRequest.url,
         hopRequest.httpMethod.toStdMethod,
         hopRequest.body,
-        currentHeaders,
+        hopHeaders,
         multipart
       )
       var waitMs = request.options.connectTimeoutMs
@@ -465,6 +477,9 @@ proc performRedirectingRequest(
           uploadedBytes
         )
       result = await buildResponse(client, raw, hopRequest, deadline)
+      if transport.cookieJar != nil:
+        for setCookie in result.headers.getAll("set-cookie"):
+          discard transport.cookieJar.store(hopRequest.url, setCookie)
 
       if not result.status.isRedirect or
           not result.headers.contains("location"):

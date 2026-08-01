@@ -249,6 +249,28 @@ Automatic redirects are handled by Joubako. `Authorization`, `Cookie`,
 scheme, host, or effective port. Every redirect target is checked against the
 request host allowlist.
 
+Native applications can opt into automatic cookie persistence by assigning a
+bounded jar to the HTTP transport:
+
+```nim
+let jar = newCookieJar()
+let transport = newHttpTransport(cookieJar = jar)
+let api = newClient(transport, "https://api.example.com/")
+```
+
+The jar applies host/domain and path matching, `Secure`, `HttpOnly`,
+`SameSite=None`, `Expires`, `Max-Age`, `__Secure-`, and `__Host-` rules. It is
+updated at every redirect hop, so a valid redirect cookie can participate in
+the next request. Caller-supplied `Cookie` headers take precedence. Limits
+default to 4 KiB per `Set-Cookie` field, 180 cookies per domain, and 3,000 total
+cookies; oldest entries are evicted first. The jar is intended to remain on the
+same event-loop thread as its `HttpTransport`.
+
+Domain matching validates that the response host covers the requested Domain,
+but Joubako does not bundle a public-suffix list. Applications accepting
+untrusted Domain attributes should enforce their own registrable-domain policy
+or use host-only cookies.
+
 `HttpTransport` retains up to eight completed keep-alive connections by
 default. Concurrent requests never share an active connection; each request
 checks out an idle connection or creates a new one. Set
