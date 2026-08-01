@@ -271,6 +271,26 @@ but Joubako does not bundle a public-suffix list. Applications accepting
 untrusted Domain attributes should enforce their own registrable-domain policy
 or use host-only cookies.
 
+TLS peer verification is enabled by default. Custom trust stores and mutual TLS
+identity can be configured without replacing the HTTP transport:
+
+```nim
+var tls = defaultTlsOptions()
+tls.caFile = "/etc/my-app/private-ca.pem"
+tls.certFile = "/etc/my-app/client-cert.pem"
+tls.keyFile = "/etc/my-app/client-key.pem"
+
+let transport = newHttpTransport(tlsOptions = tls)
+```
+
+Set `verifyMode = tvmPeerUseEnvVars` to additionally consult
+`SSL_CERT_FILE`/`SSL_CERT_DIR`. TLS 1.2-and-earlier cipher lists and TLS 1.3
+cipher suites may be overridden separately with `cipherList` and
+`cipherSuites`. `tvmNone` disables peer verification and is provided only for
+explicit use in controlled development environments. HTTPS requires compiling
+with `-d:ssl`; certificate and key paths are loaded lazily on the first HTTPS
+origin.
+
 `HttpTransport` retains up to eight completed keep-alive connections by
 default. Concurrent requests never share an active connection; each request
 checks out an idle connection or creates a new one. Set
@@ -440,7 +460,8 @@ nimble test
 The HTTP integration test binds only to a local loopback socket.
 The IPC tests use a temporary Unix domain socket on POSIX systems.
 CI runs the suite on Linux, macOS, and Windows with Nim 2.2.0 and the current
-stable Nim release. Linux additionally builds the SSL configuration.
+stable Nim release. Linux additionally builds the SSL configuration and runs
+the HTTP integration suite with SSL context initialization enabled.
 
 The allocation lifecycle probe runs under Valgrind with ARC and
 `-d:useMalloc`, so Nim allocations are visible to Memcheck:

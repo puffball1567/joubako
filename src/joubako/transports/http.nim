@@ -1,9 +1,27 @@
 import std/[asyncdispatch, httpclient, httpcore, os, strutils, times, uri]
+when defined(ssl):
+  import std/[net, ssl_config]
 import flowbrigade/timeout
 import ../[chunkconsumer, compression, cookiejar, http_retry, result,
   transport, types]
 
 type
+  TlsVerifyMode* = enum
+    tvmPeer,
+    tvmPeerUseEnvVars,
+    tvmNone
+
+  TlsOptions* = object
+    ## Peer verification is enabled by default. `tvmNone` must be selected
+    ## explicitly and should be limited to controlled development systems.
+    verifyMode*: TlsVerifyMode
+    caFile*: string
+    caDir*: string
+    certFile*: string
+    keyFile*: string
+    cipherList*: string
+    cipherSuites*: string
+
   PooledConnection = object
     client: AsyncHttpClient
     origin: string
@@ -16,7 +34,13 @@ type
     ## Active requests are not limited; use the client bulkhead for that.
     maxIdleConnections*: Natural
     cookieJar*: CookieJar
+    tlsOptions*: TlsOptions
+    when defined(ssl):
+      sslContext: SslContext
     idleConnections: seq[PooledConnection]
+
+func defaultTlsOptions*(): TlsOptions =
+  TlsOptions(verifyMode: tvmPeer)
 
 proc validateAllowedHost(request: Request; url: Uri) =
   if url.hostname.len == 0:
@@ -59,19 +83,26 @@ func hasResponseBody(request: Request; status: int): bool =
     status notin 100 .. 199 and
     status notin [204, 304]
 
-func newHttpTransport*(
+proc newHttpTransport*(
     userAgent = "Joubako/0.1";
     maxRedirects: Natural = 5;
     proxy: Proxy = nil;
     maxIdleConnections: Natural = 8;
-    cookieJar: CookieJar = nil
+    cookieJar: CookieJar = nil;
+    tlsOptions = defaultTlsOptions()
 ): HttpTransport =
+  if (tlsOptions.certFile.len == 0) != (tlsOptions.keyFile.len == 0):
+    raise newException(
+      ValueError,
+      "TLS client certificate and private key must be configured together"
+    )
   HttpTransport(
     userAgent: userAgent,
     maxRedirects: maxRedirects,
     proxy: proxy,
     maxIdleConnections: maxIdleConnections,
-    cookieJar: cookieJar
+    cookieJar: cookieJar,
+    tlsOptions: tlsOptions
   )
 
 func originKey(url: Uri): string =
@@ -87,23 +118,66 @@ func originKey(url: Uri): string =
 
 proc checkoutConnection(
     transport: HttpTransport;
-    origin: string
+    url: Uri
 ): PooledConnection =
   ## Async transports are event-loop local. No yield occurs while the idle
   ## list is inspected, so checkout is atomic within that event loop.
+  let origin = url.originKey
   for index in 0 ..< transport.idleConnections.len:
     if transport.idleConnections[index].origin == origin:
       result = transport.idleConnections[index]
       transport.idleConnections.delete(index)
       return
-  result = PooledConnection(
-    client: newAsyncHttpClient(
-      userAgent = transport.userAgent,
-      maxRedirects = 0,
-      proxy = transport.proxy
-    ),
-    origin: origin
-  )
+  when defined(ssl):
+    if url.scheme.toLowerAscii == "https" and transport.sslContext == nil:
+      let verifyMode =
+        case transport.tlsOptions.verifyMode
+        of tvmPeer: CVerifyPeer
+        of tvmPeerUseEnvVars: CVerifyPeerUseEnvVars
+        of tvmNone: CVerifyNone
+      transport.sslContext = newContext(
+        verifyMode = verifyMode,
+        certFile = transport.tlsOptions.certFile,
+        keyFile = transport.tlsOptions.keyFile,
+        cipherList = if transport.tlsOptions.cipherList.len == 0:
+          CiphersIntermediate
+        else:
+          transport.tlsOptions.cipherList,
+        caDir = transport.tlsOptions.caDir,
+        caFile = transport.tlsOptions.caFile,
+        ciphersuites = if transport.tlsOptions.cipherSuites.len == 0:
+          CiphersModern
+        else:
+          transport.tlsOptions.cipherSuites
+      )
+    if url.scheme.toLowerAscii == "https":
+      result = PooledConnection(
+        client: newAsyncHttpClient(
+          userAgent = transport.userAgent,
+          maxRedirects = 0,
+          sslContext = transport.sslContext,
+          proxy = transport.proxy
+        ),
+        origin: origin
+      )
+    else:
+      result = PooledConnection(
+        client: newAsyncHttpClient(
+          userAgent = transport.userAgent,
+          maxRedirects = 0,
+          proxy = transport.proxy
+        ),
+        origin: origin
+      )
+  else:
+    result = PooledConnection(
+      client: newAsyncHttpClient(
+        userAgent = transport.userAgent,
+        maxRedirects = 0,
+        proxy = transport.proxy
+      ),
+      origin: origin
+    )
 
 proc checkinConnection(
     transport: HttpTransport;
@@ -377,12 +451,12 @@ proc performRedirectingRequest(
 ): Future[types.Response] {.async.} =
   var currentUrl = parseUri(request.url)
   request.validateAllowedHost(currentUrl)
-  var connection = transport.checkoutConnection(currentUrl.originKey)
+  var connection = transport.checkoutConnection(currentUrl)
   var reusable = false
   defer:
     if reusable:
       transport.checkinConnection(move(connection))
-    else:
+    elif connection.client != nil:
       connection.client.close()
   var currentMethod = request.httpMethod
   var currentBody = request.body
@@ -502,7 +576,8 @@ proc performRedirectingRequest(
 
       let nextUrl = redirectedUrl(currentUrl, result.headers.get("location"))
       request.validateAllowedHost(nextUrl)
-      if not sameOrigin(currentUrl, nextUrl):
+      let originChanged = not sameOrigin(currentUrl, nextUrl)
+      if originChanged:
         currentHeaders.del("authorization")
         currentHeaders.del("cookie")
         currentHeaders.del("proxy-authorization")
@@ -516,6 +591,10 @@ proc performRedirectingRequest(
         currentHeaders.del("content-length")
         currentHeaders.del("content-type")
         currentHeaders.del("transfer-encoding")
+      if originChanged:
+        connection.origin = currentUrl.originKey
+        transport.checkinConnection(move(connection))
+        connection = transport.checkoutConnection(nextUrl)
       currentUrl = nextUrl
 
 method send*(

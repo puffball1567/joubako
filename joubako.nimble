@@ -26,6 +26,7 @@ task test, "Run the Joubako test suite":
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-codecs-forms-nimcache") & " --out:" & temporary("joubako-test-codecs-forms") & " tests/test_codecs_forms.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-compression-nimcache") & " --out:" & temporary("joubako-test-compression") & " tests/test_compression.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-cookiejar-nimcache") & " --out:" & temporary("joubako-test-cookiejar") & " tests/test_cookiejar.nim"
+  exec "nim c -r --path:src --nimcache:" & temporary("joubako-tls-options-nimcache") & " --out:" & temporary("joubako-test-tls-options") & " tests/test_tls_options.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-flowbrigade-nimcache") & " --out:" & temporary("joubako-test-flowbrigade") & " tests/test_flowbrigade_dependency.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-result-future-nimcache") & " --out:" & temporary("joubako-test-result-future") & " tests/test_result_future.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-result-client-nimcache") & " --out:" & temporary("joubako-test-result-client") & " tests/test_result_client.nim"
