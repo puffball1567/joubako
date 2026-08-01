@@ -291,6 +291,29 @@ explicit use in controlled development environments. HTTPS requires compiling
 with `-d:ssl`; certificate and key paths are loaded lazily on the first HTTPS
 origin.
 
+HTTP and SOCKS proxies can be selected per target scheme, with optional
+environment-variable discovery and `NO_PROXY` bypass rules:
+
+```nim
+let proxyOptions = ProxyOptions(
+  httpProxy: "http://proxy-user:proxy-pass@proxy.example.com:8080",
+  httpsProxy: "socks5h://proxy.example.com:1080",
+  noProxy: @["localhost", ".internal.example.com", "10.0.0.5:8443"]
+)
+let transport = newHttpTransport(proxyOptions = proxyOptions)
+```
+
+`environmentProxyOptions()` reads lowercase and uppercase `HTTP_PROXY`,
+`HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY` variants. Lowercase values take
+precedence. For CGI safety, uppercase `HTTP_PROXY` is ignored when
+`REQUEST_METHOD` is present. Explicit scheme settings take precedence over
+`allProxy`; bypass rules are evaluated first. `*`, exact hosts, domain suffixes,
+optional ports, and bracketed IPv6 hosts are supported. Proxy credentials must
+be URL-encoded when they contain reserved characters.
+
+The older `proxy = newProxy(...)` constructor argument remains supported and
+takes precedence over `ProxyOptions` for compatibility.
+
 `HttpTransport` retains up to eight completed keep-alive connections by
 default. Concurrent requests never share an active connection; each request
 checks out an idle connection or creates a new one. Set

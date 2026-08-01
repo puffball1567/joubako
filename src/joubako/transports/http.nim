@@ -3,7 +3,7 @@ when defined(ssl):
   import std/[net, ssl_config]
 import flowbrigade/timeout
 import ../[chunkconsumer, compression, cookiejar, http_retry, result,
-  transport, types]
+  proxyconfig, transport, types]
 
 type
   TlsVerifyMode* = enum
@@ -30,6 +30,7 @@ type
     userAgent*: string
     maxRedirects*: Natural
     proxy*: Proxy
+    proxyOptions*: ProxyOptions
     ## Maximum number of completed HTTP connections retained for reuse.
     ## Active requests are not limited; use the client bulkhead for that.
     maxIdleConnections*: Natural
@@ -89,17 +90,20 @@ proc newHttpTransport*(
     proxy: Proxy = nil;
     maxIdleConnections: Natural = 8;
     cookieJar: CookieJar = nil;
-    tlsOptions = defaultTlsOptions()
+    tlsOptions = defaultTlsOptions();
+    proxyOptions = ProxyOptions()
 ): HttpTransport =
   if (tlsOptions.certFile.len == 0) != (tlsOptions.keyFile.len == 0):
     raise newException(
       ValueError,
       "TLS client certificate and private key must be configured together"
     )
+  proxyOptions.validate()
   HttpTransport(
     userAgent: userAgent,
     maxRedirects: maxRedirects,
     proxy: proxy,
+    proxyOptions: proxyOptions,
     maxIdleConnections: maxIdleConnections,
     cookieJar: cookieJar,
     tlsOptions: tlsOptions
@@ -122,7 +126,14 @@ proc checkoutConnection(
 ): PooledConnection =
   ## Async transports are event-loop local. No yield occurs while the idle
   ## list is inspected, so checkout is atomic within that event loop.
-  let origin = url.originKey
+  let selectedProxy =
+    if transport.proxy != nil:
+      transport.proxy
+    else:
+      let configured = transport.proxyOptions.proxyUrlFor($url)
+      if configured.len == 0: nil else: newProxy(configured)
+  let origin = url.originKey & "|proxy=" &
+    (if selectedProxy == nil: "direct" else: $selectedProxy.url)
   for index in 0 ..< transport.idleConnections.len:
     if transport.idleConnections[index].origin == origin:
       result = transport.idleConnections[index]
@@ -156,7 +167,7 @@ proc checkoutConnection(
           userAgent = transport.userAgent,
           maxRedirects = 0,
           sslContext = transport.sslContext,
-          proxy = transport.proxy
+          proxy = selectedProxy
         ),
         origin: origin
       )
@@ -165,7 +176,7 @@ proc checkoutConnection(
         client: newAsyncHttpClient(
           userAgent = transport.userAgent,
           maxRedirects = 0,
-          proxy = transport.proxy
+          proxy = selectedProxy
         ),
         origin: origin
       )
@@ -174,7 +185,7 @@ proc checkoutConnection(
       client: newAsyncHttpClient(
         userAgent = transport.userAgent,
         maxRedirects = 0,
-        proxy = transport.proxy
+        proxy = selectedProxy
       ),
       origin: origin
     )
@@ -558,12 +569,10 @@ proc performRedirectingRequest(
       if not result.status.isRedirect or
           not result.headers.contains("location"):
         result.request = request
-        connection.origin = currentUrl.originKey
         reusable = true
         return
       if transport.maxRedirects == 0:
         result.request = request
-        connection.origin = currentUrl.originKey
         reusable = true
         return
       if redirectCount >= transport.maxRedirects:
@@ -592,7 +601,6 @@ proc performRedirectingRequest(
         currentHeaders.del("content-type")
         currentHeaders.del("transfer-encoding")
       if originChanged:
-        connection.origin = currentUrl.originKey
         transport.checkinConnection(move(connection))
         connection = transport.checkoutConnection(nextUrl)
       currentUrl = nextUrl

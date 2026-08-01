@@ -6,7 +6,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | --- | --- | --- |
 | Common request/response/error contracts | Complete | `Future[JResult[T]]`, bounded HTTP error response snapshots without request secrets, attempt counts, cancellation, deadlines, limits, synchronous and backpressured asynchronous progress consumers |
 | FlowBrigade resilience | Complete | Async retry, circuit breaker, token-bucket rate limit, bulkhead |
-| HTTP(S) and JSON | Complete | Verified TLS by default, custom CA/mTLS/cipher configuration, keep-alive reuse, bounded idle pool, bounded gzip/deflate decoding, bounded opt-in cookie jar across redirects, streaming limit checks, redirects, typed JSON |
+| HTTP(S) and JSON | Complete | Verified TLS by default, custom CA/mTLS/cipher configuration, HTTP/SOCKS proxy selection with environment and NO_PROXY rules, keep-alive reuse keyed by origin and proxy, bounded idle pool, bounded gzip/deflate decoding, bounded opt-in cookie jar across redirects, streaming limit checks, redirects, typed JSON |
 | Typed query, headers, body APIs | Complete | JSON, URL-encoded form, buffered multipart, file-backed streaming multipart, raw bytes-as-string |
 | Promise-style composition | Complete | Result-aware `then`, typed `catch`, `finally`, heterogeneous two-operation `all` |
 | NIF/BIF through NIFKit | Deferred | Deliberately postponed |
