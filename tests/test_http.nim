@@ -1276,6 +1276,28 @@ suite "Joubako HTTP transport":
     )
     proxyServer.close()
 
+  test "ProxyOptions supplies proxy authentication from its URL":
+    let proxyServer = newAsyncSocket(buffered = false)
+    proxyServer.setSockOpt(OptReuseAddr, true)
+    proxyServer.bindAddr(Port(0), "127.0.0.1")
+    proxyServer.listen()
+    let (_, proxyPort) = proxyServer.getLocalAddr()
+    let captured = newFuture[CapturedRequest]("test_http.proxyOptionsCapture")
+    let serving = captureRequest(proxyServer, captured)
+    let options = ProxyOptions(
+      httpProxy: "http://proxy-user:proxy-pass@127.0.0.1:" & $int(proxyPort)
+    )
+    let client = newClient(newHttpTransport(proxyOptions = options))
+    discard waitFor client.get("http://upstream.invalid/private")
+    waitFor serving
+    let request = captured.read
+    check request.requestLine.startsWith(
+      "GET http://upstream.invalid/private "
+    )
+    check "proxy-authorization: basic chjvehktdxnlcjpwcm94es1wyxnz" in
+      request.headers.toLowerAscii
+    proxyServer.close()
+
   test "cross-origin redirects strip every sensitive header":
     let captured = waitFor exerciseCrossOriginSensitiveHeaders()
     let lowered = captured.headers.toLowerAscii
