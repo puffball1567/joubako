@@ -1,4 +1,4 @@
-import std/[asyncdispatch, os]
+import std/[asyncdispatch, os, strutils]
 import joubako
 
 const Iterations = 800
@@ -28,6 +28,8 @@ proc missingHandler(request: Request): Future[Response] {.async.} =
     raise newException(IOError, "offline")
   if request.url == "stream":
     return Response(status: 200, body: "stream payload", request: request)
+  if request.url == "codec":
+    return Response(status: 200, body: request.body, request: request)
   var headers = initHeaders()
   headers.add("x-probe", "retained")
   return Response(
@@ -41,6 +43,17 @@ proc missingHandler(request: Request): Future[Response] {.async.} =
 proc main(): Future[void] {.async.} =
   var callbackTotal = 0
   let client = newClient(newInProcessTransport(missingHandler))
+  let codec = Codec[int, int](
+    encodeAsync: proc(value: int): Future[string] {.async.} = $value,
+    decodeResponseAsync: proc(response: Response): Future[int] {.async.} =
+      return response.body.parseInt
+  )
+  let failingCodec = Codec[int, int](
+    encode: proc(value: int): string = $value,
+    decodeResponseAsync: proc(response: Response): Future[int] {.async.} =
+      discard response
+      raise newException(ValueError, "decoder failure")
+  )
   for index in 0 ..< Iterations:
     let raw = rawFailure(index)
     let normalized = settle(fallible(raw))
@@ -81,6 +94,19 @@ proc main(): Future[void] {.async.} =
     let rejected = await client.get("stream", options = streamOptions)
     doAssert rejected.isErr
     doAssert rejected.error.kind == jeStream
+
+    let decoded = await client.sendWithCodec(
+      rmPost, "codec", index, codec
+    )
+    doAssert decoded.isOk
+    doAssert decoded.value == index
+
+    let decodeFailure = await client.sendWithCodec(
+      rmPost, "codec", index, failingCodec
+    )
+    doAssert decodeFailure.isErr
+    doAssert decodeFailure.error.kind == jeCodec
+    doAssert decodeFailure.error.hasResponse
 
     let parallel = await all(safeValue(index), safeError(index))
     doAssert parallel.isErr

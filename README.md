@@ -174,6 +174,31 @@ if createdResult.isOk:
 
 Typed JSON helpers are available for `POST`, `PUT`, and `PATCH`.
 
+Serialization is also pluggable. A codec configures exactly one encoder and
+one decoder; callbacks may be synchronous or asynchronous, and response-aware
+decoders can inspect status and headers:
+
+```nim
+let codec = Codec[Command, Reply](
+  mediaType: "application/vnd.example.command",
+  encodeAsync: proc(value: Command): Future[string] {.async.} =
+    return await encodeCommand(value),
+  decodeResponse: proc(response: Response): Reply =
+    decodeReply(response.body, response.headers.get("x-schema-version"))
+)
+
+let reply = await api.sendWithCodec(rmPost, "commands", command, codec)
+```
+
+Failed asynchronous callbacks are consumed internally and returned as
+`jeCodec`; decoder failures retain a bounded response snapshot. Configuring
+multiple encoders or decoders is rejected rather than relying on implicit
+precedence.
+
+JSON behavior can be adjusted through `JsonCodecOptions` or a reusable
+`jsonCodec[TBody, TResponse]`. This exposes Nim's extra/missing-key and enum
+encoding policies while retaining the typed helper API.
+
 ## Interceptors
 
 Interceptors run in registration order and may be synchronous or asynchronous.
