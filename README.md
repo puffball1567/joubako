@@ -505,6 +505,25 @@ For a long-lived connection, use `connectWebSocket`, `sendText`,
 nimble test
 ```
 
+Deterministic hardening targets are separate from the fast unit suite:
+
+```sh
+nimble fuzz
+nimble soak
+```
+
+`fuzz` generates malformed Cookie, proxy-bypass, retry-date, query, gzip, and
+deflate inputs from a fixed seed so CI failures are reproducible. Override
+`JOUBAKO_FUZZ_ITERATIONS` to increase its default 10,000 iterations. `soak`
+mixes successful typed serialization, retryable status responses, transport
+disconnects, and bounded Cookie churn for 20,000 logical operations; use
+`JOUBAKO_SOAK_ITERATIONS` for longer local runs.
+
+`FaultInjectingTransport` provides deterministic scripted `transport`,
+`timeout`, HTTP-status, delay, and pass-through steps for application tests.
+It composes with normal retry, deadline, circuit-breaker, and cancellation
+behavior without requiring a real network failure.
+
 The HTTP integration test binds only to a local loopback socket.
 The IPC tests use a temporary Unix domain socket on POSIX systems.
 CI runs the suite on Linux, macOS, and Windows with Nim 2.2.0 and the current
@@ -523,7 +542,9 @@ successful requests, typed JSON decoding, Promise callbacks, interceptors,
 FlowBrigade-backed guards, structured HTTP and transport failures, `all`, and
 discarded callback chains. Public request failures cross an internal settling
 boundary and become `JResult.Err`, so the error-path probe also finishes with
-zero bytes in use under ARC without broad Valgrind suppressions.
+zero bytes in use under ARC without broad Valgrind suppressions. A dedicated
+fault-injection probe additionally repeats retry recovery from transport and
+HTTP failures.
 
 ## Benchmark
 

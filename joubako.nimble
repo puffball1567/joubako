@@ -28,12 +28,19 @@ task test, "Run the Joubako test suite":
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-cookiejar-nimcache") & " --out:" & temporary("joubako-test-cookiejar") & " tests/test_cookiejar.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-tls-options-nimcache") & " --out:" & temporary("joubako-test-tls-options") & " tests/test_tls_options.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-proxyconfig-nimcache") & " --out:" & temporary("joubako-test-proxyconfig") & " tests/test_proxyconfig.nim"
+  exec "nim c -r --path:src --nimcache:" & temporary("joubako-fault-injection-nimcache") & " --out:" & temporary("joubako-test-fault-injection") & " tests/test_fault_injection.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-flowbrigade-nimcache") & " --out:" & temporary("joubako-test-flowbrigade") & " tests/test_flowbrigade_dependency.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-result-future-nimcache") & " --out:" & temporary("joubako-test-result-future") & " tests/test_result_future.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-result-client-nimcache") & " --out:" & temporary("joubako-test-result-client") & " tests/test_result_client.nim"
 
 task benchmark, "Build and run local core benchmarks":
   exec "nim c -d:release -r --path:src --nimcache:" & temporary("joubako-benchmark-nimcache") & " --out:" & temporary("joubako-core-benchmark") & " benchmarks/core_bench.nim"
+
+task fuzz, "Run deterministic structured-input fuzzing":
+  exec "nim c -d:release -r --path:src --nimcache:" & temporary("joubako-fuzz-nimcache") & " --out:" & temporary("joubako-fuzz-inputs") & " tests/fuzz_inputs.nim"
+
+task soak, "Run the long mixed success/failure lifecycle probe":
+  exec "nim c -d:release -r --path:src --nimcache:" & temporary("joubako-soak-nimcache") & " --out:" & temporary("joubako-soak-probe") & " tests/soak_probe.nim"
 
 task leak, "Run ARC success and Result-error lifecycle probes under Valgrind":
   exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-leak-nimcache") & " --out:" & temporary("joubako-leak-probe") & " tests/leak_probe.nim"
@@ -44,3 +51,5 @@ task leak, "Run ARC success and Result-error lifecycle probes under Valgrind":
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-compression-leak-probe")
   exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-cookiejar-leak-nimcache") & " --out:" & temporary("joubako-cookiejar-leak-probe") & " tests/cookiejar_leak_probe.nim"
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-cookiejar-leak-probe")
+  exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-fault-leak-nimcache") & " --out:" & temporary("joubako-fault-leak-probe") & " tests/fault_leak_probe.nim"
+  exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-fault-leak-probe")
