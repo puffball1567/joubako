@@ -314,7 +314,8 @@ cipher suites may be overridden separately with `cipherList` and
 `cipherSuites`. `tvmNone` disables peer verification and is provided only for
 explicit use in controlled development environments. HTTPS requires compiling
 with `-d:ssl`; certificate and key paths are loaded lazily on the first HTTPS
-origin.
+origin. Joubako configures OpenSSL hostname or IP-address verification for each
+new pooled connection, in addition to validating the certificate chain.
 
 HTTP and SOCKS proxies can be selected per target scheme, with optional
 environment-variable discovery and `NO_PROXY` bypass rules:
@@ -503,6 +504,7 @@ For a long-lived connection, use `connectWebSocket`, `sendText`,
 
 ```sh
 nimble test
+nimble testSsl
 ```
 
 Deterministic hardening targets are separate from the fast unit suite:
@@ -525,10 +527,12 @@ It composes with normal retry, deadline, circuit-breaker, and cancellation
 behavior without requiring a real network failure.
 
 The HTTP integration test binds only to a local loopback socket.
+`testSsl` performs real loopback TLS and mTLS handshakes and exercises an
+authenticated SOCKS5h proxy without contacting the public network.
 The IPC tests use a temporary Unix domain socket on POSIX systems.
 CI runs the suite on Linux, macOS, and Windows with Nim 2.2.0 and the current
 stable Nim release. Linux additionally builds the SSL configuration and runs
-the HTTP integration suite with SSL context initialization enabled.
+the secure-transport integration suite.
 
 The allocation lifecycle probe runs under Valgrind with ARC and
 `-d:useMalloc`, so Nim allocations are visible to Memcheck:
