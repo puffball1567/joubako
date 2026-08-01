@@ -1,4 +1,4 @@
-import std/[asyncdispatch, strutils, unittest]
+import std/[asyncdispatch, sequtils, strutils, unittest]
 import nifkit
 import joubako
 import ./result_test_helpers
@@ -288,3 +288,195 @@ suite "NIFKit codec integration":
     check waitFor(newClient(newInProcessTransport(echoBif)).postNif(
       "/empty", ""
     )) == ""
+
+  test "Unicode strings survive a binary round trip":
+    let source = "(message \"日本語\" true)"
+    check waitFor(newClient(newInProcessTransport(echoBif)).postNif(
+      "/unicode", source
+    )) == source
+
+  test "unsupported NIF escapes fail before transport dispatch":
+    var dispatched = false
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      dispatched = true
+      return Response(status: 200, body: request.body, request: request)
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).postNif("/escape", "\"bad\\\"quote\"")
+    check outcome.isErr
+    if outcome.isErr:
+      check outcome.error.codecCode == "nkeMalformedInput"
+    check not dispatched
+
+  test "request and response size limits accept exact BIF boundaries":
+    let source = "(exact boundary)"
+    let wireBytes = nifToBif(source).len
+    var options = defaultRequestOptions()
+    options.maxRequestBytes = wireBytes
+    options.maxResponseBytes = wireBytes
+    check waitFor(newClient(newInProcessTransport(echoBif)).postNif(
+      "/exact", source, options = options
+    )) == source
+
+  test "encode and decode limits remain independent":
+    let responseSource = "(response (nested value))"
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      return Response(
+        status: 200,
+        body: nifToBif(responseSource),
+        request: request
+      )
+    var options = defaultNifCodecOptions()
+    options.encodeLimits.maxNestingDepth = 1
+    options.decodeLimits.maxNestingDepth = 8
+    let client = newClient(newInProcessTransport(handler))
+    check waitFor(client.postNif(
+      "/independent", "request", codecOptions = options
+    )) == responseSource
+
+    options.encodeLimits.maxNestingDepth = 8
+    options.decodeLimits.maxNestingDepth = 1
+    let outcome = waitOutcome client.postNif(
+      "/independent", "request", codecOptions = options
+    )
+    check outcome.isErr
+    check outcome.error.codecCode == "nkeNestingTooDeep"
+
+  test "BIF nesting token pool and string limits retain their codes":
+    let cases = @[
+      (source: "(a (b x))", configure: proc(limits: var CodecLimits) =
+        limits.maxNestingDepth = 1, expected: "nkeNestingTooDeep"),
+      (source: "(a b c)", configure: proc(limits: var CodecLimits) =
+        limits.maxTokens = 1, expected: "nkeTokenLimit"),
+      (source: "\"pooled\"", configure: proc(limits: var CodecLimits) =
+        limits.maxPoolEntries = 0, expected: "nkePoolLimit"),
+      (source: "\"abcdef\"", configure: proc(limits: var CodecLimits) =
+        limits.maxStringBytes = 5, expected: "nkeStringLimit")
+    ]
+    for item in cases:
+      let wireBody = nifToBif(item.source)
+      let handler = proc(request: Request): Future[Response] {.async.} =
+        return Response(status: 200, body: wireBody, request: request)
+      var options = defaultNifCodecOptions()
+      item.configure(options.decodeLimits)
+      let outcome = waitOutcome newClient(
+        newInProcessTransport(handler)
+      ).getNif("/decode-limit", codecOptions = options)
+      check outcome.isErr
+      check outcome.error.codecCode == item.expected
+      check outcome.error.hasResponse
+
+  test "pool byte limits are enforced in both conversion directions":
+    let source = "\"pooled-value\""
+    var options = defaultNifCodecOptions()
+    options.encodeLimits.maxPoolBytes = 1
+    let encodeFailure = waitOutcome newClient(
+      newInProcessTransport(echoBif)
+    ).postNif("/encode-pool", source, codecOptions = options)
+    check encodeFailure.isErr
+    check encodeFailure.error.codecCode == "nkePoolLimit"
+
+    let wireBody = nifToBif(source)
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      return Response(status: 200, body: wireBody, request: request)
+    options = defaultNifCodecOptions()
+    options.decodeLimits.maxPoolBytes = 1
+    let decodeFailure = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).getNif("/decode-pool", codecOptions = options)
+    check decodeFailure.isErr
+    check decodeFailure.error.codecCode == "nkePoolLimit"
+
+  test "truncated BIF payloads retain response metadata":
+    let complete = nifToBif("(valid payload)")
+    for cut in [0, 1, 7, complete.len - 1]:
+      let truncated = complete[0 ..< cut]
+      let handler = proc(request: Request): Future[Response] {.async.} =
+        var headers = initHeaders()
+        headers.set("x-corruption", $cut)
+        return Response(
+          status: 200,
+          statusText: "OK",
+          headers: headers,
+          body: truncated,
+          request: request
+        )
+      let outcome = waitOutcome newClient(
+        newInProcessTransport(handler)
+      ).getNif("/truncated/" & $cut)
+      check outcome.isErr
+      check outcome.error.kind == jeCodec
+      check outcome.error.codecCode.len > 0
+      check outcome.error.url == "/truncated/" & $cut
+      check outcome.error.response.headers.get("x-corruption") == $cut
+
+  test "a custom status validator can decode a BIF error document":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      return Response(
+        status: 422,
+        body: nifToBif("(error invalidRecord)"),
+        request: request
+      )
+    let client = newClient(
+      newInProcessTransport(handler),
+      validateStatus = proc(status: int): bool = status == 422
+    )
+    check waitFor(client.getNif("/validation")) == "(error invalidRecord)"
+
+  test "request interceptors observe encoded BIF without corrupting it":
+    var observedNif = ""
+    let client = newClient(newInProcessTransport(echoBif))
+    discard client.useRequestInterceptor(proc(request: Request): Request =
+      observedNif = bifToNif(request.body)
+      result = request
+      result.headers.set("x-observed", "yes")
+    )
+    check waitFor(client.postNif("/interceptor", "(request 7)")) ==
+      "(request 7)"
+    check observedNif == "(request 7)"
+
+  test "pre-cancelled NIF requests never reach the transport":
+    var dispatched = false
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      dispatched = true
+      return Response(status: 200, body: request.body, request: request)
+    let token = newCancellationToken()
+    token.cancel("no longer needed")
+    var options = defaultRequestOptions()
+    options.cancellation = token
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).postNif("/cancelled", "request", options = options)
+    check outcome.isErr
+    check outcome.error.kind == jeCancelled
+    check not dispatched
+
+  test "codec failures are not retried even when retry is enabled":
+    var dispatches = 0
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      inc dispatches
+      return Response(status: 200, body: "not-bif", request: request)
+    var options = defaultRequestOptions()
+    options.retry = defaultHttpRetryOptions()
+    options.retry.maxAttempts = 4
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).getNif("/no-retry", options = options)
+    check outcome.isErr
+    check outcome.error.kind == jeCodec
+    check dispatches == 1
+
+  test "concurrent NIF requests retain independent payloads":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      await sleepAsync(request.body.len mod 3)
+      return Response(status: 200, body: request.body, request: request)
+    let client = newClient(newInProcessTransport(handler))
+    let sources = toSeq(0 ..< 64).mapIt("(record id " & $it & ")")
+    var pending: seq[Future[JResult[string]]]
+    for index, source in sources:
+      pending.add client.postNif("/concurrent/" & $index, source)
+    let outcomes = asyncdispatch.waitFor all(pending)
+    check outcomes.len == sources.len
+    for index, outcome in outcomes:
+      check outcome.isOk
+      check outcome.value == sources[index]
