@@ -135,8 +135,11 @@ jobs:
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
 
-      - name: Build public API with SSL
-        run: nim c -d:ssl --mm:arc --path:src src/joubako.nim
+      - name: Build and test with SSL
+        run: |
+          nim c -d:ssl --mm:arc --path:src src/joubako.nim
+          nim c -r -d:ssl --mm:arc --path:src tests/test_tls_options.nim
+          nim c -r -d:ssl --mm:arc --path:src tests/test_http.nim
 
   valgrind:
     name: Linux Valgrind leak probe

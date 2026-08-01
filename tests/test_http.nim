@@ -624,6 +624,34 @@ proc exerciseChunkedBodyLimit(): Future[ErrorKind] {.async.} =
   raise newException(AssertionDefect, "request should have exceeded its limit")
 
 suite "Joubako HTTP transport":
+  when defined(ssl):
+    test "custom TLS trust is initialized only for HTTPS origins":
+      let server = newAsyncSocket(buffered = false)
+      server.setSockOpt(OptReuseAddr, true)
+      server.bindAddr(Port(0), "127.0.0.1")
+      server.listen()
+      let (_, port) = server.getLocalAddr()
+      let serving = serveOne(server)
+      var tls = defaultTlsOptions()
+      tls.caFile = "/definitely/missing/joubako-ca.pem"
+      let client = newClient(newHttpTransport(tlsOptions = tls))
+      let response = waitFor client.get(
+        "http://127.0.0.1:" & $int(port) & "/"
+      )
+      check response.status == 200
+      waitFor serving
+      server.close()
+
+    test "invalid custom TLS trust becomes a structured transport error":
+      var tls = defaultTlsOptions()
+      tls.caFile = "/definitely/missing/joubako-ca.pem"
+      let client = newClient(newHttpTransport(tlsOptions = tls))
+      try:
+        discard waitFor client.get("https://127.0.0.1:1/")
+        fail()
+      except JoubakoError as error:
+        check error.kind == jeTransport
+
   test "performs and decodes a real HTTP request":
     waitFor exerciseHttpTransport()
 
