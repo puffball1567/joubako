@@ -96,6 +96,26 @@ Futures. The standard Nim `await` is used unchanged: `await` produces a
 are therefore handled in one explicit path. Programming defects remain outside
 this contract.
 
+HTTP status failures retain a bounded response snapshot for diagnostics. The
+snapshot intentionally excludes the originating request, so request
+credentials and request bodies are not kept alive by the error:
+
+```nim
+let outcome = await api.get("users/unknown")
+if outcome.isErr:
+  let error = outcome.error
+  if error.hasResponse:
+    echo error.response.status, " ", error.response.statusText
+    echo error.response.headers.get("content-type")
+    echo error.response.body
+  echo "attempts: ", error.attempts
+```
+
+`response.body` is subject to `maxResponseBytes`. When response streaming is
+enabled, it remains empty because chunks have already been delivered to the
+configured consumer. Response headers can contain sensitive server data such
+as `Set-Cookie`, so applications should redact them before logging.
+
 Independent operations may start together and be awaited as one Result:
 
 ```nim
@@ -278,7 +298,8 @@ The default retryable statuses are `408`, `425`, `429`, `500`, `502`, `503`,
 and `504`; transport and timeout failures are also retryable for idempotent
 requests. Cancellation, invalid input, codec failures, body limits, and other
 HTTP statuses stop immediately. Both delta-seconds and HTTP-date forms of
-`Retry-After` are supported.
+`Retry-After` are supported. If every attempt fails, the final error retains
+the final HTTP response snapshot and reports the number of attempts performed.
 
 ```nim
 let token = newCancellationToken()

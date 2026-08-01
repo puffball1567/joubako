@@ -352,9 +352,15 @@ proc buildResponse(
         name.toLowerAscii notin ["content-encoding", "content-length"]:
       responseHeaders.add(name, value)
 
+  let statusText =
+    if raw.status.len > 3:
+      raw.status[3 .. ^1].strip
+    else:
+      ""
+
   return types.Response(
     status: int(raw.code),
-    statusText: raw.status,
+    statusText: statusText,
     headers: responseHeaders,
     body: body,
     request: request

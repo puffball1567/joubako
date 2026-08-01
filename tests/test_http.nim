@@ -1202,6 +1202,32 @@ suite "Joubako HTTP transport":
       check error.kind == jeHttpStatus
       check error.status == 302
 
+  test "HTTP status errors retain bounded wire response metadata":
+    try:
+      discard waitFor requestRaw(
+        "HTTP/1.1 418 Deliberate Failure\r\n" &
+        "Content-Type: application/problem+json\r\n" &
+        "X-Trace: first\r\n" &
+        "X-Trace: second\r\n" &
+        "Content-Length: 15\r\n" &
+        "Connection: close\r\n\r\n" &
+        "failure\0payload"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeHttpStatus
+      check error.status == 418
+      check error.hasResponse
+      check error.response.status == 418
+      check error.response.statusText == "Deliberate Failure"
+      check error.response.headers.get("content-type") ==
+        "application/problem+json"
+      check error.response.headers.getAll("x-trace") == @[
+        "first", "second"
+      ]
+      check error.response.body == "failure\0payload"
+      check error.attempts == 1
+
   test "streaming limits reject before delivering an overflowing chunk":
     let server = newAsyncSocket(buffered = false)
     server.setSockOpt(OptReuseAddr, true)

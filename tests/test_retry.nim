@@ -312,8 +312,14 @@ suite "Joubako HTTP retry policy":
     options.retry.maxAttempts = 2
     options.retry.sleep = noWait
 
-    expect JoubakoError:
+    try:
       discard waitFor client.get("/always-down", options = options)
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeHttpStatus
+      check error.hasResponse
+      check error.response.status == 503
+      check error.attempts == 2
     check attempts == 2
 
   test "explicit non-idempotency prevents GET retry":

@@ -113,8 +113,18 @@ suite "Client URL and configuration":
 
 suite "Client errors and limits":
   test "non-success statuses become structured errors":
+    var responseHeaders = initHeaders()
+    responseHeaders.add("content-type", "application/problem+json")
+    responseHeaders.add("x-trace", "first")
+    responseHeaders.add("x-trace", "second")
     let handler = proc(request: Request): Future[Response] {.async.} =
-      return Response(status: 404, request: request)
+      return Response(
+        status: 404,
+        statusText: "Not Found",
+        headers: responseHeaders,
+        body: "{\"error\":\"missing\"}\0tail",
+        request: request
+      )
     let client = newClient(newInProcessTransport(handler))
     try:
       discard waitFor client.get("/missing")
@@ -123,6 +133,31 @@ suite "Client errors and limits":
       check error.kind == jeHttpStatus
       check error.status == 404
       check error.url == "/missing"
+      check error.hasResponse
+      check error.response.status == 404
+      check error.response.statusText == "Not Found"
+      check error.response.headers.get("content-type") ==
+        "application/problem+json"
+      check error.response.headers.getAll("x-trace") == @[
+        "first", "second"
+      ]
+      check error.response.body == "{\"error\":\"missing\"}\0tail"
+      check error.attempts == 1
+
+    responseHeaders.set("x-trace", "mutated")
+
+  test "transport errors do not claim to contain an HTTP response":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      raise newException(IOError, "offline")
+    let client = newClient(newInProcessTransport(handler))
+    try:
+      discard waitFor client.get("/offline")
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTransport
+      check not error.hasResponse
+      check error.response.status == 0
+      check error.attempts == 1
 
   test "a custom status validator can accept 404":
     let handler = proc(request: Request): Future[Response] {.async.} =
@@ -268,8 +303,11 @@ suite "Client interceptors":
         discard request
         raise newException(ValueError, "bad interceptor")
     )
-    expect JoubakoError:
+    try:
       discard waitFor client.get("/")
+      fail()
+    except JoubakoError as error:
+      check error.attempts == 0
     check not dispatched
 
   test "response interceptor failures propagate":
@@ -279,8 +317,11 @@ suite "Client interceptors":
         discard response
         raise newException(ValueError, "bad response interceptor")
     )
-    expect JoubakoError:
+    try:
       discard waitFor client.get("/")
+      fail()
+    except JoubakoError as error:
+      check error.attempts == 1
 
   test "request interceptors cannot produce an empty URL":
     let client = newClient(newInProcessTransport(okResponse))

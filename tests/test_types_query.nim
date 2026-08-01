@@ -190,9 +190,33 @@ suite "Core types":
     check error.url == "https://example.test"
     check error.status == 503
     check error.retryAfterMs == 2_000
+    check not error.hasResponse
+    check error.attempts == 0
 
   test "new errors default to no Retry-After":
     check newJoubakoError(jeTransport, "offline").retryAfterMs == -1
+
+  test "error response snapshots omit requests and copy headers":
+    var headers = initHeaders()
+    headers.add("x-value", "one")
+    let request = Request(
+      url: "https://example.test/private",
+      body: "secret"
+    )
+    let response = Response(
+      status: 403,
+      statusText: "Forbidden",
+      headers: headers,
+      body: "denied",
+      request: request
+    )
+    let snapshot = response.toErrorResponse()
+    headers.set("x-value", "changed")
+
+    check snapshot.status == 403
+    check snapshot.statusText == "Forbidden"
+    check snapshot.headers.get("x-value") == "one"
+    check snapshot.body == "denied"
 
 suite "Query serialization":
   test "empty parameters leave a path unchanged":

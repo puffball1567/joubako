@@ -84,6 +84,14 @@ type
     body*: string
     request*: Request
 
+  ErrorResponse* = object
+    ## Bounded response data retained for an HTTP status error. This omits the
+    ## originating Request so credentials and request bodies are not retained.
+    status*: int
+    statusText*: string
+    headers*: Headers
+    body*: string
+
   ErrorKind* = enum
     jeInvalidRequest,
     jeTransport,
@@ -104,6 +112,11 @@ type
     url*: string
     ## Parsed Retry-After delay in milliseconds, or -1 when absent/invalid.
     retryAfterMs*: int64
+    ## True when `response` contains an HTTP response received from the peer.
+    hasResponse*: bool
+    response*: ErrorResponse
+    ## Number of transport attempts completed for this logical request.
+    attempts*: int
 
 func normalizeHeader(name: string): string =
   name.strip.toLowerAscii
@@ -152,6 +165,14 @@ iterator pairs*(headers: Headers): tuple[name, value: string] =
 proc merge*(target: var Headers; source: Headers) =
   for name, value in source.pairs:
     target.add(name, value)
+
+proc toErrorResponse*(response: Response): ErrorResponse =
+  ## Creates an independent response snapshot without retaining its Request.
+  result.status = response.status
+  result.statusText = response.statusText
+  result.headers = initHeaders()
+  result.headers.merge(response.headers)
+  result.body = response.body
 
 proc overlay*(target: var Headers; source: Headers) =
   ## Replaces matching target headers while retaining multiple source values.
@@ -211,6 +232,14 @@ proc newJoubakoError*(
   result.url = url
   result.status = status
   result.retryAfterMs = retryAfterMs
+
+proc attachResponse*(error: ref JoubakoError; response: Response) =
+  ## Retains bounded peer response data without the originating Request.
+  if error == nil:
+    return
+  error.hasResponse = true
+  error.response = response.toErrorResponse()
+  error.status = response.status
 
 func `$`*(httpMethod: RequestMethod): string =
   case httpMethod

@@ -28,7 +28,15 @@ proc missingHandler(request: Request): Future[Response] {.async.} =
     raise newException(IOError, "offline")
   if request.url == "stream":
     return Response(status: 200, body: "stream payload", request: request)
-  return Response(status: 404, request: request)
+  var headers = initHeaders()
+  headers.add("x-probe", "retained")
+  return Response(
+    status: 404,
+    statusText: "Not Found",
+    headers: headers,
+    body: "bounded error response",
+    request: request
+  )
 
 proc main(): Future[void] {.async.} =
   var callbackTotal = 0
@@ -52,6 +60,11 @@ proc main(): Future[void] {.async.} =
     let response = await client.get("missing")
     doAssert response.isErr
     doAssert response.error.kind == jeHttpStatus
+    doAssert response.error.hasResponse
+    doAssert response.error.response.statusText == "Not Found"
+    doAssert response.error.response.headers.get("x-probe") == "retained"
+    doAssert response.error.response.body == "bounded error response"
+    doAssert response.error.attempts == 1
 
     let offline = await client.get("offline")
     doAssert offline.isErr
