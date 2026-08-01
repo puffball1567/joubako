@@ -1,11 +1,14 @@
-import std/asyncdispatch
+import std/[asyncdispatch, strutils]
 import ./[client, result, types]
 
 type
   Encoder*[T] = proc(value: T): string {.closure.}
+  ResultEncoder*[T] = proc(value: T): JResult[string] {.closure.}
   AsyncEncoder*[T] = proc(value: T): Future[string] {.closure.}
   Decoder*[T] = proc(payload: string): T {.closure.}
   ResponseDecoder*[T] = proc(response: Response): T {.closure.}
+  ResultResponseDecoder*[T] =
+    proc(response: Response): JResult[T] {.closure.}
   AsyncResponseDecoder*[T] =
     proc(response: Response): Future[T] {.closure.}
 
@@ -16,20 +19,24 @@ type
     ## inspect status and headers, and asynchronous callbacks are settled into
     ## JResult errors without exposing failed Futures.
     encode*: Encoder[TBody]
+    encodeResult*: ResultEncoder[TBody]
     encodeAsync*: AsyncEncoder[TBody]
     decode*: Decoder[TResponse]
     decodeResponse*: ResponseDecoder[TResponse]
+    decodeResponseResult*: ResultResponseDecoder[TResponse]
     decodeResponseAsync*: AsyncResponseDecoder[TResponse]
 
 func configuredEncoderCount[TBody, TResponse](
     codec: Codec[TBody, TResponse]
 ): int =
-  ord(not codec.encode.isNil) + ord(not codec.encodeAsync.isNil)
+  ord(not codec.encode.isNil) + ord(not codec.encodeResult.isNil) +
+    ord(not codec.encodeAsync.isNil)
 
 func configuredDecoderCount[TBody, TResponse](
     codec: Codec[TBody, TResponse]
 ): int =
   ord(not codec.decode.isNil) + ord(not codec.decodeResponse.isNil) +
+    ord(not codec.decodeResponseResult.isNil) +
     ord(not codec.decodeResponseAsync.isNil)
 
 proc invalidCodec[T](path, message: string): Future[JResult[T]] =
@@ -58,6 +65,16 @@ proc decodeWithCodec[TBody, TResponse](
   if not codec.decodeResponse.isNil:
     try:
       return ok(codec.decodeResponse(response))
+    except CatchableError as error:
+      return err[TResponse](error.normalizeDecodeError(response))
+  if not codec.decodeResponseResult.isNil:
+    try:
+      let decoded = codec.decodeResponseResult(response)
+      if decoded.isErr:
+        if decoded.error.url.len == 0:
+          decoded.error.url = response.request.url
+        decoded.error.attachResponse(response)
+      return decoded
     except CatchableError as error:
       return err[TResponse](error.normalizeDecodeError(response))
 
@@ -113,6 +130,16 @@ proc sendWithCodec*[TBody, TResponse](
       body = codec.encode(value)
     except CatchableError as error:
       return err[TResponse](error.asJoubakoError(jeCodec, path))
+  elif not codec.encodeResult.isNil:
+    try:
+      let encoded = codec.encodeResult(value)
+      if encoded.isErr:
+        if encoded.error.url.len == 0:
+          encoded.error.url = path
+        return err[TResponse](encoded.error)
+      body = encoded.value
+    except CatchableError as error:
+      return err[TResponse](error.asJoubakoError(jeCodec, path))
   else:
     var pending: Future[string]
     try:
@@ -164,6 +191,21 @@ proc getWithCodec*[T](
   let codec = Codec[string, T](
     encode: proc(_: string): string = "",
     decodeResponse: decoder
+  )
+  client.sendWithCodec(rmGet, path, "", codec, headers, options)
+
+proc getWithCodec*[T](
+    client: Client;
+    path: string;
+    decoder: ResultResponseDecoder[T];
+    headers = initHeaders();
+    options = RequestOptions()
+): Future[JResult[T]] =
+  if decoder.isNil:
+    return invalidCodec[T](path, "decoder must not be nil")
+  let codec = Codec[string, T](
+    encode: proc(_: string): string = "",
+    decodeResponseResult: decoder
   )
   client.sendWithCodec(rmGet, path, "", codec, headers, options)
 

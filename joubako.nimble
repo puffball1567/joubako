@@ -8,6 +8,7 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 requires "flowbrigade >= 0.5.0"
+requires "nifkit >= 0.2.0"
 requires "zlib >= 0.2.0"
 
 proc temporary(name: string): string =
@@ -24,6 +25,7 @@ task test, "Run the Joubako test suite":
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-ipc-nimcache") & " --out:" & temporary("joubako-test-ipc") & " tests/test_ipc.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-websocket-nimcache") & " --out:" & temporary("joubako-test-websocket") & " tests/test_websocket.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-codecs-forms-nimcache") & " --out:" & temporary("joubako-test-codecs-forms") & " tests/test_codecs_forms.nim"
+  exec "nim c -r --path:src --nimcache:" & temporary("joubako-nif-codec-nimcache") & " --out:" & temporary("joubako-test-nif-codec") & " tests/test_nifcodec.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-compression-nimcache") & " --out:" & temporary("joubako-test-compression") & " tests/test_compression.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-cookiejar-nimcache") & " --out:" & temporary("joubako-test-cookiejar") & " tests/test_cookiejar.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-tls-options-nimcache") & " --out:" & temporary("joubako-test-tls-options") & " tests/test_tls_options.nim"
@@ -56,3 +58,5 @@ task leak, "Run ARC success and Result-error lifecycle probes under Valgrind":
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-cookiejar-leak-probe")
   exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-fault-leak-nimcache") & " --out:" & temporary("joubako-fault-leak-probe") & " tests/fault_leak_probe.nim"
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-fault-leak-probe")
+  exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-nifcodec-leak-nimcache") & " --out:" & temporary("joubako-nifcodec-leak-probe") & " tests/nifcodec_leak_probe.nim"
+  exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-nifcodec-leak-probe")

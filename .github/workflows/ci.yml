@@ -26,6 +26,13 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
+      - name: Checkout NIFKit
+        uses: actions/checkout@v4
+        with:
+          repository: puffball1567/nifkit
+          ref: v0.2.0
+          path: _deps/nifkit
+
       - name: Checkout nim-zlib
         uses: actions/checkout@v4
         with:
@@ -63,6 +70,7 @@ jobs:
       - name: Register local dependencies
         run: |
           nimble develop -y -a:_deps/flowbrigade
+          nimble develop -y -a:_deps/nifkit
           nimble develop -y -a:_deps/results
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
@@ -99,6 +107,13 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
+      - name: Checkout NIFKit
+        uses: actions/checkout@v4
+        with:
+          repository: puffball1567/nifkit
+          ref: v0.2.0
+          path: _deps/nifkit
+
       - name: Checkout nim-zlib
         uses: actions/checkout@v4
         with:
@@ -136,6 +151,7 @@ jobs:
       - name: Register local dependencies
         run: |
           nimble develop -y -a:_deps/flowbrigade
+          nimble develop -y -a:_deps/nifkit
           nimble develop -y -a:_deps/results
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
@@ -162,6 +178,13 @@ jobs:
           ref: v0.5.0
           path: _deps/flowbrigade
 
+      - name: Checkout NIFKit
+        uses: actions/checkout@v4
+        with:
+          repository: puffball1567/nifkit
+          ref: v0.2.0
+          path: _deps/nifkit
+
       - name: Checkout nim-zlib
         uses: actions/checkout@v4
         with:
@@ -199,6 +222,7 @@ jobs:
       - name: Register local dependencies
         run: |
           nimble develop -y -a:_deps/flowbrigade
+          nimble develop -y -a:_deps/nifkit
           nimble develop -y -a:_deps/results
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew

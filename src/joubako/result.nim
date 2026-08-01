@@ -57,9 +57,11 @@ proc asJoubakoError*(
     url: string
 ): ref JoubakoError =
   if error of JoubakoError:
-    cast[ref JoubakoError](error)
+    result = cast[ref JoubakoError](error)
+    if result.url.len == 0:
+      result.url = url
   else:
-    newJoubakoError(kind, error.msg, url)
+    result = newJoubakoError(kind, error.msg, url)
 
 proc settle*[T](
     source: sink FallibleFuture[T];
