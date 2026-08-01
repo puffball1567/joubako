@@ -146,6 +146,7 @@ jobs:
           nim c -d:ssl --mm:arc --path:src src/joubako.nim
           nim c -r -d:ssl --mm:arc --path:src tests/test_tls_options.nim
           nim c -r -d:ssl --mm:arc --path:src tests/test_http.nim
+          nimble --legacy --offline testSsl
 
   valgrind:
     name: Linux Valgrind leak probe

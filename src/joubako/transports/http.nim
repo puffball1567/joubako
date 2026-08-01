@@ -1,6 +1,6 @@
 import std/[asyncdispatch, httpclient, httpcore, os, strutils, times, uri]
 when defined(ssl):
-  import std/[net, ssl_config]
+  import std/[net, openssl, ssl_config]
 import flowbrigade/timeout
 import ../[chunkconsumer, compression, cookiejar, http_retry, result,
   proxyconfig, transport, types]
@@ -25,6 +25,8 @@ type
   PooledConnection = object
     client: AsyncHttpClient
     origin: string
+    when defined(ssl):
+      sslContext: SslContext
 
   HttpTransport* = ref object of Transport
     userAgent*: string
@@ -36,12 +38,31 @@ type
     maxIdleConnections*: Natural
     cookieJar*: CookieJar
     tlsOptions*: TlsOptions
-    when defined(ssl):
-      sslContext: SslContext
     idleConnections: seq[PooledConnection]
 
 func defaultTlsOptions*(): TlsOptions =
   TlsOptions(verifyMode: tvmPeer)
+
+proc `=copy`(destination: var PooledConnection; source: PooledConnection) {.
+  error: "PooledConnection owns a TLS context and cannot be copied".}
+
+proc close(connection: var PooledConnection) {.raises: [].} =
+  if connection.client != nil:
+    try:
+      connection.client.close()
+    except Exception:
+      discard
+    connection.client = nil
+  when defined(ssl):
+    if connection.sslContext != nil:
+      try:
+        connection.sslContext.destroyContext()
+      except Exception:
+        discard
+      connection.sslContext = nil
+
+proc `=destroy`(connection: var PooledConnection) =
+  connection.close()
 
 proc validateAllowedHost(request: Request; url: Uri) =
   if url.hostname.len == 0:
@@ -120,6 +141,60 @@ func originKey(url: Uri): string =
       "80"
   scheme & "://" & url.hostname.toLowerAscii & ":" & port
 
+when defined(ssl):
+  type X509VerifyParam = pointer
+
+  proc SSL_CTX_get0_param(context: SslCtx): X509VerifyParam {.
+    cdecl, dynlib: DLLSSLName, importc.}
+  proc X509_VERIFY_PARAM_set1_host(
+      param: X509VerifyParam;
+      hostname: cstring;
+      hostnameLength: csize_t
+  ): cint {.cdecl, dynlib: DLLSSLName, importc.}
+  proc X509_VERIFY_PARAM_set1_ip_asc(
+      param: X509VerifyParam;
+      address: cstring
+  ): cint {.cdecl, dynlib: DLLSSLName, importc.}
+
+  proc newTlsContext(transport: HttpTransport; hostname: string): SslContext =
+    let verifyMode =
+      case transport.tlsOptions.verifyMode
+      of tvmPeer: CVerifyPeer
+      of tvmPeerUseEnvVars: CVerifyPeerUseEnvVars
+      of tvmNone: CVerifyNone
+    result = newContext(
+      verifyMode = verifyMode,
+      certFile = transport.tlsOptions.certFile,
+      keyFile = transport.tlsOptions.keyFile,
+      cipherList = if transport.tlsOptions.cipherList.len == 0:
+        CiphersIntermediate
+      else:
+        transport.tlsOptions.cipherList,
+      caDir = transport.tlsOptions.caDir,
+      caFile = transport.tlsOptions.caFile,
+      ciphersuites = if transport.tlsOptions.cipherSuites.len == 0:
+        CiphersModern
+      else:
+        transport.tlsOptions.cipherSuites
+    )
+
+    when not defined(nimDisableCertificateValidation):
+      if transport.tlsOptions.verifyMode != tvmNone:
+        let param = SSL_CTX_get0_param(result.context)
+        if param == nil:
+          raise newException(IOError, "failed to configure TLS hostname verification")
+        let configured =
+          if hostname.isIpAddress:
+            X509_VERIFY_PARAM_set1_ip_asc(param, hostname.cstring)
+          else:
+            X509_VERIFY_PARAM_set1_host(
+              param,
+              hostname.cstring,
+              csize_t(hostname.len)
+            )
+        if configured != 1:
+          raise newException(IOError, "failed to configure TLS hostname verification")
+
 proc checkoutConnection(
     transport: HttpTransport;
     url: Uri
@@ -136,40 +211,23 @@ proc checkoutConnection(
     (if selectedProxy == nil: "direct" else: $selectedProxy.url)
   for index in 0 ..< transport.idleConnections.len:
     if transport.idleConnections[index].origin == origin:
-      result = transport.idleConnections[index]
+      result = move(transport.idleConnections[index])
       transport.idleConnections.delete(index)
       return
   when defined(ssl):
-    if url.scheme.toLowerAscii == "https" and transport.sslContext == nil:
-      let verifyMode =
-        case transport.tlsOptions.verifyMode
-        of tvmPeer: CVerifyPeer
-        of tvmPeerUseEnvVars: CVerifyPeerUseEnvVars
-        of tvmNone: CVerifyNone
-      transport.sslContext = newContext(
-        verifyMode = verifyMode,
-        certFile = transport.tlsOptions.certFile,
-        keyFile = transport.tlsOptions.keyFile,
-        cipherList = if transport.tlsOptions.cipherList.len == 0:
-          CiphersIntermediate
-        else:
-          transport.tlsOptions.cipherList,
-        caDir = transport.tlsOptions.caDir,
-        caFile = transport.tlsOptions.caFile,
-        ciphersuites = if transport.tlsOptions.cipherSuites.len == 0:
-          CiphersModern
-        else:
-          transport.tlsOptions.cipherSuites
-      )
     if url.scheme.toLowerAscii == "https":
+      let sslContext = transport.newTlsContext(url.hostname)
       result = PooledConnection(
         client: newAsyncHttpClient(
           userAgent = transport.userAgent,
           maxRedirects = 0,
-          sslContext = transport.sslContext,
+          # The verification parameter is hostname-specific. A context per
+          # new pooled connection keeps concurrent origins isolated.
+          sslContext = sslContext,
           proxy = selectedProxy
         ),
-        origin: origin
+        origin: origin,
+        sslContext: sslContext
       )
     else:
       result = PooledConnection(
@@ -196,7 +254,7 @@ proc checkinConnection(
 ) =
   if transport.maxIdleConnections == 0 or
       transport.idleConnections.len >= int(transport.maxIdleConnections):
-    connection.client.close()
+    connection.close()
   else:
     transport.idleConnections.add(move(connection))
 
@@ -204,7 +262,7 @@ proc closeIdleConnections*(transport: HttpTransport) =
   ## Closes retained keep-alive sockets. Requests currently in progress are
   ## unaffected and may return their connection to the pool afterwards.
   for connection in transport.idleConnections.mitems:
-    connection.client.close()
+    connection.close()
   transport.idleConnections.setLen(0)
 
 func idleConnectionCount*(transport: HttpTransport): int =
@@ -468,7 +526,7 @@ proc performRedirectingRequest(
     if reusable:
       transport.checkinConnection(move(connection))
     elif connection.client != nil:
-      connection.client.close()
+      connection.close()
   var currentMethod = request.httpMethod
   var currentBody = request.body
   var currentMultipartParts = request.multipartParts
