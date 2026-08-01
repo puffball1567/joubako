@@ -110,6 +110,10 @@ type
     kind*: ErrorKind
     status*: int
     url*: string
+    ## Optional machine-readable code and byte offset supplied by a codec.
+    ## `codecOffset` is -1 when the codec did not identify a byte position.
+    codecCode*: string
+    codecOffset*: int
     ## Parsed Retry-After delay in milliseconds, or -1 when absent/invalid.
     retryAfterMs*: int64
     ## True when `response` contains an HTTP response received from the peer.
@@ -232,6 +236,7 @@ proc newJoubakoError*(
   result.url = url
   result.status = status
   result.retryAfterMs = retryAfterMs
+  result.codecOffset = -1
 
 proc attachResponse*(error: ref JoubakoError; response: Response) =
   ## Retains bounded peer response data without the originating Request.

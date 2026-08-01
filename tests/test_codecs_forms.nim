@@ -144,6 +144,55 @@ suite "Pluggable codecs":
     check waitFor(client.sendWithCodec(rmPost, "/", 21, codec)) == 42
     check seenBody == "21"
 
+  test "Result codecs preserve operational encoder errors without dispatch":
+    var dispatched = false
+    let client = newClient(newInProcessTransport(
+      proc(request: Request): Future[Response] {.async.} =
+        dispatched = true
+        return Response(status: 200, request: request)
+    ))
+    let codec = Codec[string, string](
+      encodeResult: proc(_: string): JResult[string] =
+        err[string](newJoubakoError(jeCodec, "rejected")),
+      decode: proc(value: string): string = value
+    )
+    let outcome = asyncdispatch.waitFor client.sendWithCodec(
+      rmPost, "/result-encode", "x", codec
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeCodec
+    check outcome.error.url == "/result-encode"
+    check not dispatched
+
+  test "Result response decoders retain bounded response context":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      return Response(status: 200, body: "bad", request: request)
+    let client = newClient(newInProcessTransport(handler))
+    let outcome = asyncdispatch.waitFor client.getWithCodec(
+      "/result-decode",
+      proc(_: Response): JResult[int] =
+        err[int](newJoubakoError(jeCodec, "rejected"))
+    )
+    check outcome.isErr
+    check outcome.error.url == "/result-decode"
+    check outcome.error.hasResponse
+    check outcome.error.response.body == "bad"
+
+  test "unexpected exceptions from Result codecs are normalized":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      return Response(status: 200, body: "ok", request: request)
+    let codec = Codec[string, string](
+      encodeResult: proc(_: string): JResult[string] =
+        raise newException(ValueError, "unexpected"),
+      decode: proc(value: string): string = value
+    )
+    let outcome = asyncdispatch.waitFor newClient(
+      newInProcessTransport(handler)
+    ).sendWithCodec(rmPost, "/unexpected", "x", codec)
+    check outcome.isErr
+    check outcome.error.kind == jeCodec
+    check outcome.error.url == "/unexpected"
+
   test "ambiguous encoder and decoder configurations are rejected":
     var dispatched = false
     let client = newClient(newInProcessTransport(

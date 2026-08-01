@@ -200,6 +200,17 @@ under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
 CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 
+## NIFKit
+
+- Version: 0.2.0 or later compatible release
+- Source: https://github.com/puffball1567/nifkit
+- Copyright: Copyright (c) 2026 nifkit contributors
+- License: MIT License
+
+NIFKit provides Joubako's bounded NIF 2027 text to BIF v5 conversion and BIF
+validation. The full MIT License terms are reproduced in the MIT License
+section below.
+
 ## nim-zlib
 
 - Version: 0.2.0 or later compatible release

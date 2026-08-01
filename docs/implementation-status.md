@@ -9,7 +9,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | HTTP(S) and JSON | Complete | Verified TLS chain and hostname/IP by default, custom CA/mTLS/cipher configuration, HTTP/SOCKS proxy selection with environment and NO_PROXY rules, keep-alive reuse keyed by origin and proxy, bounded idle pool, bounded gzip/deflate decoding, bounded opt-in cookie jar across redirects, streaming limit checks, redirects, typed JSON |
 | Typed query, headers, body APIs | Complete | Configurable JSON policies, synchronous/asynchronous pluggable codecs with response-aware decoding, URL-encoded form, buffered multipart, file-backed streaming multipart, raw bytes-as-string |
 | Promise-style composition | Complete | Result-aware `then`, typed `catch`, `finally`, heterogeneous two-operation `all` |
-| NIF/BIF through NIFKit | Deferred | Deliberately postponed |
+| NIF/BIF through NIFKit | Complete for NIFKit v0.2 | NIF text request API, BIF v5 wire encoding, canonical NIF response decoding, finite per-direction codec limits, structured error code/offset mapping; typed Nim-value serialization awaits a future NIFKit API |
 | Local IPC | Complete on POSIX | Unix domain sockets with a bounded framed protocol |
 | In-process transport | Complete | Deterministic handler transport |
 | WebSocket | Complete | One-shot transport plus long-lived connection primitives |
@@ -43,6 +43,7 @@ failure-path behavior visible until Nim fixes it or the transport is replaced.
 
 ## Deferred
 
-Only NIF/BIF codec support and its NIF-specific decoding limits are deferred.
-The generic codec boundary is present so NIFKit can be added without changing
-the request API.
+NIFKit v0.2 deliberately exposes NIF text/BIF conversion rather than its
+planned typed Nim-value data profile. Joubako therefore supports the complete
+bounded v0.2 wire codec now; typed `toNif`/`fromNif` helpers can be layered onto
+the same request API when NIFKit publishes them.

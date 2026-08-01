@@ -199,6 +199,40 @@ JSON behavior can be adjusted through `JsonCodecOptions` or a reusable
 `jsonCodec[TBody, TResponse]`. This exposes Nim's extra/missing-key and enum
 encoding policies while retaining the typed helper API.
 
+NIFKit v0.2 integration accepts NIF text at the API boundary, transmits BIF v5
+binary data, and decodes successful responses to canonical NIF text:
+
+```nim
+let created = await api.postNif(
+  "/records",
+  "(record title \"NIF\" -5 12u)"
+)
+if created.isErr:
+  echo created.error.codecCode, " at byte ", created.error.codecOffset
+else:
+  echo created.value
+```
+
+`getNif`, `sendNif`, `postNif`, `putNif`, and `patchNif` use the provisional
+`application/x-nif-bif` media type unless the caller supplies `Content-Type`.
+Both conversion directions use finite NIFKit limits. They can be tightened
+independently:
+
+```nim
+var nifOptions = defaultNifCodecOptions()
+nifOptions.encodeLimits.maxInputBytes = 256 * 1024
+nifOptions.decodeLimits.maxNestingDepth = 64
+
+let response = await api.getNif("/records/7", codecOptions = nifOptions)
+```
+
+Malformed data, unsupported BIF versions, and input, output, nesting, token,
+pool, string, and index limits become `jeCodec` with a machine-readable
+`codecCode`. `codecOffset` is `-1` when NIFKit cannot identify a byte position.
+NIFKit v0.2 does not yet implement its proposed typed Nim-value serializer, so
+this API intentionally works with NIF text rather than pretending to provide
+JSON-style object mapping.
+
 ## Interceptors
 
 Interceptors run in registration order and may be synchronous or asynchronous.
