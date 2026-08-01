@@ -79,6 +79,12 @@ jobs:
       - name: Run tests
         run: nimble --legacy --offline test
 
+      - name: Run hardening fuzz and soak probes
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable'
+        run: |
+          nimble --legacy --offline fuzz
+          nimble --legacy --offline soak
+
   ssl:
     name: Linux SSL build
     runs-on: ubuntu-latest

@@ -16,6 +16,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | Cross-platform CI | Complete | Linux, macOS, Windows; Nim 2.2.0 and stable |
 | Native allocation leak probe | Complete | Valgrind, ARC, `-d:useMalloc`, zero bytes at exit on success and error paths |
 | Memory model | Complete | Public failures settle into values; project builds and tests with deterministic ARC |
+| Hardening | Complete | Scripted fault transport, deterministic structured-input fuzzing, mixed retry/codec/cookie soak test, and dedicated fault-path Valgrind coverage |
 
 ## Security contracts
 
