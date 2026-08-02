@@ -55,8 +55,8 @@ Third-party attribution is collected in
 
 ## Getting started
 
-Joubako requires Nim 2.2 or newer and is developed with ARC. After the first
-release is published, install it and its declared dependencies through Nimble:
+Joubako requires Nim 2.2 or newer and is developed with ARC. Install it and
+its declared dependencies through Nimble:
 
 ```sh
 nimble install joubako

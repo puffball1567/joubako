@@ -221,9 +221,11 @@ proc sendText*(websocket: WebSocket; message: string): Future[void] {.async.} =
   await websocket.socket.send(encodeFrame(1, message))
 
 proc receiveExact(socket: AsyncSocket; size: int): Future[string] {.async.} =
-  result = await socket.recv(size)
-  if result.len != size:
-    raise newException(IOError, "WebSocket peer disconnected during a frame")
+  while result.len < size:
+    let chunk = await socket.recv(size - result.len)
+    if chunk.len == 0:
+      raise newException(IOError, "WebSocket peer disconnected during a frame")
+    result.add chunk
 
 proc receiveMessage*(
     websocket: WebSocket;

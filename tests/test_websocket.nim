@@ -51,23 +51,29 @@ func header(headers, name: string): string =
         line[0 ..< separator].strip.toLowerAscii == name.toLowerAscii:
       return line[separator + 1 .. ^1].strip
 
+proc receiveExact(socket: AsyncSocket; size: int): Future[string] {.async.} =
+  while result.len < size:
+    let chunk = await socket.recv(size - result.len)
+    if chunk.len == 0:
+      raise newException(IOError, "test WebSocket peer disconnected")
+    result.add chunk
+
 proc receiveMaskedText(socket: AsyncSocket): Future[string] {.async.} =
-  let head = await socket.recv(2)
-  doAssert head.len == 2
+  let head = await socket.receiveExact(2)
   doAssert (uint8(head[1]) and 0x80) != 0
   var size = int(uint8(head[1]) and 0x7f)
   if size == 126:
-    let extended = await socket.recv(2)
+    let extended = await socket.receiveExact(2)
     size = (int(uint8(extended[0])) shl 8) or int(uint8(extended[1]))
   elif size == 127:
-    let extended = await socket.recv(8)
+    let extended = await socket.receiveExact(8)
     var longSize = 0'u64
     for value in extended:
       longSize = (longSize shl 8) or uint64(uint8(value))
     doAssert longSize <= uint64(high(int))
     size = int(longSize)
-  let mask = await socket.recv(4)
-  let payload = await socket.recv(size)
+  let mask = await socket.receiveExact(4)
+  let payload = await socket.receiveExact(size)
   for index, value in payload:
     result.add char(uint8(value) xor uint8(mask[index mod 4]))
 
@@ -104,7 +110,8 @@ proc serveFrameSequence(
     server: AsyncSocket;
     frames: seq[string];
     received: Future[string] = nil;
-    waitAfter = false
+    waitAfter = false;
+    fragmentWrites = false
 ): Future[void] {.async.} =
   let socket = await server.accept()
   defer:
@@ -121,7 +128,12 @@ proc serveFrameSequence(
   if received != nil:
     received.complete(message)
   for frame in frames:
-    await socket.send(frame)
+    if fragmentWrites:
+      for value in frame:
+        await socket.send($value)
+        await sleepAsync(1)
+    else:
+      await socket.send(frame)
   if waitAfter:
     while (await socket.recv(64)).len > 0:
       discard
@@ -129,7 +141,8 @@ proc serveFrameSequence(
 proc withFrameServer(
     frames: seq[string];
     action: proc(url: string): Future[void] {.closure.};
-    waitAfter = false
+    waitAfter = false;
+    fragmentWrites = false
 ): Future[string] {.async.} =
   let server = newAsyncSocket(buffered = false)
   server.setSockOpt(OptReuseAddr, true)
@@ -139,7 +152,9 @@ proc withFrameServer(
     server.close()
   let (_, port) = server.getLocalAddr()
   let received = newFuture[string]("test_websocket.frameReceived")
-  let serving = serveFrameSequence(server, frames, received, waitAfter)
+  let serving = serveFrameSequence(
+    server, frames, received, waitAfter, fragmentWrites
+  )
   await action("ws://127.0.0.1:" & $int(port) & "/frames")
   await serving
   return received.read
@@ -160,9 +175,9 @@ proc serveDelayedExchange(
     "Connection: Upgrade\r\n" &
     "Sec-WebSocket-Accept: " & acceptFor(key) & "\r\n\r\n"
   )
-  discard await socket.receiveMaskedText()
-  await sleepAsync(responseDelayMs)
   try:
+    discard await socket.receiveMaskedText()
+    await sleepAsync(responseDelayMs)
     await socket.send(serverFrame("late"))
   except CatchableError:
     discard
@@ -296,7 +311,18 @@ suite "WebSocket transport":
       check (await client.post(url, "request")).body == "reply"
     discard waitFor withFrameServer(
       @[serverFrame("ping", 9), serverFrame("reply")],
-      action
+      action,
+      waitAfter = true
+    )
+
+  test "frames split across TCP reads are reconstructed":
+    let action = proc(url: string): Future[void] {.async.} =
+      let client = newClient(newWebSocketTransport())
+      check (await client.post(url, "request")).body == "fragmented"
+    discard waitFor withFrameServer(
+      @[serverFrame("fragmented")],
+      action,
+      fragmentWrites = true
     )
 
   test "masked server frames are rejected":

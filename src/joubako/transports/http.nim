@@ -1,4 +1,5 @@
-import std/[asyncdispatch, httpclient, httpcore, os, strutils, times, uri]
+import std/[asyncdispatch, base64, httpclient, httpcore, os, strutils, times,
+  uri]
 when defined(ssl):
   import std/[net, openssl, ssl_config]
 import flowbrigade/timeout
@@ -25,6 +26,7 @@ type
   PooledConnection = object
     client: AsyncHttpClient
     origin: string
+    proxyAuthorization: string
     when defined(ssl):
       sslContext: SslContext
 
@@ -214,6 +216,18 @@ proc checkoutConnection(
       result = move(transport.idleConnections[index])
       transport.idleConnections.delete(index)
       return
+  var clientProxy = selectedProxy
+  var proxyAuthorization = ""
+  if selectedProxy != nil and
+      selectedProxy.url.scheme.toLowerAscii == "http" and
+      selectedProxy.url.username.len > 0:
+    proxyAuthorization = "Basic " & encode(
+      selectedProxy.url.username & ":" & selectedProxy.url.password
+    )
+    var proxyUrl = selectedProxy.url
+    proxyUrl.username = ""
+    proxyUrl.password = ""
+    clientProxy = newProxy(proxyUrl)
   when defined(ssl):
     if url.scheme.toLowerAscii == "https":
       let sslContext = transport.newTlsContext(url.hostname)
@@ -224,9 +238,10 @@ proc checkoutConnection(
           # The verification parameter is hostname-specific. A context per
           # new pooled connection keeps concurrent origins isolated.
           sslContext = sslContext,
-          proxy = selectedProxy
+          proxy = clientProxy
         ),
         origin: origin,
+        proxyAuthorization: proxyAuthorization,
         sslContext: sslContext
       )
     else:
@@ -234,18 +249,20 @@ proc checkoutConnection(
         client: newAsyncHttpClient(
           userAgent = transport.userAgent,
           maxRedirects = 0,
-          proxy = selectedProxy
+          proxy = clientProxy
         ),
-        origin: origin
+        origin: origin,
+        proxyAuthorization: proxyAuthorization
       )
   else:
     result = PooledConnection(
       client: newAsyncHttpClient(
         userAgent = transport.userAgent,
         maxRedirects = 0,
-        proxy = selectedProxy
+        proxy = clientProxy
       ),
-      origin: origin
+      origin: origin,
+      proxyAuthorization: proxyAuthorization
     )
 
 proc checkinConnection(
@@ -553,6 +570,9 @@ proc performRedirectingRequest(
         let cookies = transport.cookieJar.cookieHeader(hopRequest.url)
         if cookies.len > 0:
           hopHeaders.add("cookie", cookies)
+      if connection.proxyAuthorization.len > 0 and
+          not hopHeaders.hasKey("proxy-authorization"):
+        hopHeaders.add("proxy-authorization", connection.proxyAuthorization)
 
       client.headers = newHttpHeaders()
       let multipart = hopRequest.buildMultipart()
