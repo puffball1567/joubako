@@ -104,7 +104,8 @@ proc serveFrameSequence(
     server: AsyncSocket;
     frames: seq[string];
     received: Future[string] = nil;
-    waitAfter = false
+    waitAfter = false;
+    fragmentWrites = false
 ): Future[void] {.async.} =
   let socket = await server.accept()
   defer:
@@ -121,7 +122,12 @@ proc serveFrameSequence(
   if received != nil:
     received.complete(message)
   for frame in frames:
-    await socket.send(frame)
+    if fragmentWrites:
+      for value in frame:
+        await socket.send($value)
+        await sleepAsync(1)
+    else:
+      await socket.send(frame)
   if waitAfter:
     while (await socket.recv(64)).len > 0:
       discard
@@ -129,7 +135,8 @@ proc serveFrameSequence(
 proc withFrameServer(
     frames: seq[string];
     action: proc(url: string): Future[void] {.closure.};
-    waitAfter = false
+    waitAfter = false;
+    fragmentWrites = false
 ): Future[string] {.async.} =
   let server = newAsyncSocket(buffered = false)
   server.setSockOpt(OptReuseAddr, true)
@@ -139,7 +146,9 @@ proc withFrameServer(
     server.close()
   let (_, port) = server.getLocalAddr()
   let received = newFuture[string]("test_websocket.frameReceived")
-  let serving = serveFrameSequence(server, frames, received, waitAfter)
+  let serving = serveFrameSequence(
+    server, frames, received, waitAfter, fragmentWrites
+  )
   await action("ws://127.0.0.1:" & $int(port) & "/frames")
   await serving
   return received.read
@@ -297,6 +306,16 @@ suite "WebSocket transport":
     discard waitFor withFrameServer(
       @[serverFrame("ping", 9), serverFrame("reply")],
       action
+    )
+
+  test "frames split across TCP reads are reconstructed":
+    let action = proc(url: string): Future[void] {.async.} =
+      let client = newClient(newWebSocketTransport())
+      check (await client.post(url, "request")).body == "fragmented"
+    discard waitFor withFrameServer(
+      @[serverFrame("fragmented")],
+      action,
+      fragmentWrites = true
     )
 
   test "masked server frames are rejected":
