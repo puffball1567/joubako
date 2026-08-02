@@ -29,6 +29,7 @@ nimble test
 nimble testSsl
 nimble fuzz
 nimble soak
+nimble e2e
 nimble benchmark
 ```
 

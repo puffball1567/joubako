@@ -166,6 +166,29 @@ jobs:
           nim c -r -d:ssl --mm:arc --path:src tests/test_http.nim
           nimble --legacy --offline testSsl
 
+  docker-e2e:
+    name: Linux Docker E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Joubako
+        uses: actions/checkout@v4
+
+      - name: Build and run cross-container suite
+        run: |
+          docker compose -f tests/e2e/compose.yml up \
+            --build \
+            --abort-on-container-exit \
+            --exit-code-from client
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose -f tests/e2e/compose.yml logs --no-color
+
+      - name: Remove E2E containers
+        if: always()
+        run: docker compose -f tests/e2e/compose.yml down --volumes --remove-orphans
+
   valgrind:
     name: Linux Valgrind leak probe
     runs-on: ubuntu-latest

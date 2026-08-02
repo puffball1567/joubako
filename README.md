@@ -53,7 +53,7 @@ nim-zlib 0.2 or newer and its bundled zlib implementation.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
-## Installation
+## Getting started
 
 Joubako requires Nim 2.2 or newer and is developed with ARC. After the first
 release is published, install it and its declared dependencies through Nimble:
@@ -79,9 +79,25 @@ proc main() {.async.} =
 waitFor main()
 ```
 
-HTTPS and WSS support require compiling the application with `-d:ssl`. Plain
-HTTP, in-process transport, codecs, and the common request API do not require
-that define. The same program is available as
+Compile and run Joubako applications with ARC and TLS enabled:
+
+```sh
+nim c -r --mm:arc -d:ssl app.nim
+```
+
+This is the recommended build command for normal Joubako applications.
+`-d:ssl` enables HTTPS and WSS capability; it does not force plaintext HTTP
+requests to use TLS. Keeping it enabled means the same binary can use HTTP,
+HTTPS, WS, and WSS without changing its build configuration.
+
+For a deliberately TLS-free target without OpenSSL, use the minimal build:
+
+```sh
+nim c -r --mm:arc app.nim
+```
+
+Plain HTTP, Unix IPC, in-process transport, codecs, and the common request API
+remain available without `-d:ssl`. The example above is available as
 [`examples/basic.nim`](examples/basic.nim).
 
 ## Local dependency setup
@@ -635,6 +651,8 @@ Deterministic hardening targets are separate from the fast unit suite:
 ```sh
 nimble fuzz
 nimble soak
+nimble e2eHost
+nimble e2e
 ```
 
 `fuzz` generates malformed Cookie, proxy-bypass, retry-date, query, gzip, and
@@ -643,6 +661,17 @@ deflate inputs from a fixed seed so CI failures are reproducible. Override
 mixes successful typed serialization, retryable status responses, transport
 disconnects, and bounded Cookie churn for 20,000 logical operations; use
 `JOUBAKO_SOAK_ITERATIONS` for longer local runs.
+
+`e2eHost` runs the same HTTP scenarios against independent Python backend and
+redirect processes over real loopback TCP, so the transport can be validated
+without Docker. `e2e` additionally builds a clean Nim/Joubako client container and sends real requests over
+a Docker Compose network to independent backend and redirect containers. It
+checks typed JSON, repeated query/header values, binary bodies, gzip, chunked
+streaming, retry, cross-origin credential stripping, cookies, multipart,
+file downloads, response limits, NIF/BIF, concurrent requests, and timeout
+behavior without using the in-process transport or host loopback server. See
+[`tests/e2e/README.md`](tests/e2e/README.md) for the topology and complete
+scenario list.
 
 `FaultInjectingTransport` provides deterministic scripted `transport`,
 `timeout`, HTTP-status, delay, and pass-through steps for application tests.
