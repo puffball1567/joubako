@@ -7,7 +7,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-08-02
 
 ### Added
 
@@ -48,4 +48,3 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   failure paths under ARC. Joubako's deterministic Result and fault probes
   remain leak-free; secure integration tests keep the upstream behavior
   visible.
-
