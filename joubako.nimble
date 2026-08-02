@@ -47,6 +47,22 @@ task fuzz, "Run deterministic structured-input fuzzing":
 task soak, "Run the long mixed success/failure lifecycle probe":
   exec "nim c -d:release -r --path:src --nimcache:" & temporary("joubako-soak-nimcache") & " --out:" & temporary("joubako-soak-probe") & " tests/soak_probe.nim"
 
+task e2e, "Run the cross-container HTTP integration suite":
+  let compose = "docker compose -f tests/e2e/compose.yml"
+  try:
+    exec compose &
+      " up --build --abort-on-container-exit --exit-code-from client"
+  except OSError:
+    try:
+      exec compose & " down --volumes --remove-orphans"
+    except OSError:
+      discard
+    raise
+  exec compose & " down --volumes --remove-orphans"
+
+task e2eHost, "Run the cross-process HTTP integration suite without Docker":
+  exec "python3 tests/e2e/run_host.py"
+
 task leak, "Run ARC success and Result-error lifecycle probes under Valgrind":
   exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-leak-nimcache") & " --out:" & temporary("joubako-leak-probe") & " tests/leak_probe.nim"
   exec "valgrind --leak-check=full --show-leak-kinds=definite,indirect --errors-for-leak-kinds=definite,indirect --error-exitcode=99 " & temporary("joubako-leak-probe")
