@@ -1,0 +1,51 @@
+# Changelog
+
+All notable changes to Joubako are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.1.0] - Unreleased
+
+### Added
+
+- Result-valued asynchronous request APIs using Nim's standard `await`.
+- Promise-style synchronous and asynchronous `then`, `catch`, and `finally`
+  composition, plus heterogeneous two-operation `all`.
+- HTTP and HTTPS with verified TLS defaults, configurable trust, mutual TLS,
+  proxies, bounded keep-alive reuse, redirects, cancellation, and independent
+  connection, read, and total deadlines.
+- Bounded streaming response consumption, file downloads, upload/download
+  progress, and gzip/deflate decompression.
+- Typed JSON, URL-encoded form, buffered and file-backed multipart, pluggable
+  synchronous/asynchronous codecs, and NIFKit v0.2 NIF/BIF integration.
+- FlowBrigade-backed retry, circuit breaker, token-bucket rate limiting, and
+  bulkhead guards.
+- Bounded opt-in cookie storage, authentication helpers, Unix-domain IPC,
+  WebSocket, in-process, and deterministic fault-injection transports.
+- Linux, macOS, and Windows CI; deterministic fuzz and soak probes; and ARC
+  allocation lifecycle checks under Valgrind.
+
+### Security
+
+- Response limits are enforced while bytes are read and while compressed data
+  is expanded, rather than after an unbounded body has been allocated.
+- Cross-origin redirects remove authorization, cookie, proxy authorization,
+  and host headers.
+- URLs, headers, multipart metadata, proxy configuration, WebSocket frames,
+  IPC frames, and NIF/BIF inputs are validated with finite limits.
+
+### Known limitations
+
+- Unix-domain IPC is available only on POSIX systems.
+- HTTPS and WSS require compilation with `-d:ssl`.
+- NIFKit v0.2 converts NIF text to and from BIF v5. Typed Nim-value NIF
+  serialization remains deferred until NIFKit publishes that API.
+- Nim 2.2's standard async transport can retain small failed-Future and
+  exception allocations on some TLS-verification and SOCKS-authentication
+  failure paths under ARC. Joubako's deterministic Result and fault probes
+  remain leak-free; secure integration tests keep the upstream behavior
+  visible.
+
