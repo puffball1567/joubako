@@ -76,6 +76,10 @@ jobs:
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
 
+      - name: Generate Nim 2.2 dependency paths
+        if: matrix.nim-version == '2.2.0'
+        run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
+
       - name: Resolve dependencies
         if: matrix.nim-version == 'stable'
         run: nimble --legacy --offline setup
