@@ -54,7 +54,8 @@ func header(headers, name: string): string =
 proc receiveExact(socket: AsyncSocket; size: int): Future[string] {.async.} =
   while result.len < size:
     let chunk = await socket.recv(size - result.len)
-    doAssert chunk.len > 0
+    if chunk.len == 0:
+      raise newException(IOError, "test WebSocket peer disconnected")
     result.add chunk
 
 proc receiveMaskedText(socket: AsyncSocket): Future[string] {.async.} =
@@ -174,9 +175,9 @@ proc serveDelayedExchange(
     "Connection: Upgrade\r\n" &
     "Sec-WebSocket-Accept: " & acceptFor(key) & "\r\n\r\n"
   )
-  discard await socket.receiveMaskedText()
-  await sleepAsync(responseDelayMs)
   try:
+    discard await socket.receiveMaskedText()
+    await sleepAsync(responseDelayMs)
     await socket.send(serverFrame("late"))
   except CatchableError:
     discard
