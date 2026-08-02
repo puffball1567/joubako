@@ -51,23 +51,28 @@ func header(headers, name: string): string =
         line[0 ..< separator].strip.toLowerAscii == name.toLowerAscii:
       return line[separator + 1 .. ^1].strip
 
+proc receiveExact(socket: AsyncSocket; size: int): Future[string] {.async.} =
+  while result.len < size:
+    let chunk = await socket.recv(size - result.len)
+    doAssert chunk.len > 0
+    result.add chunk
+
 proc receiveMaskedText(socket: AsyncSocket): Future[string] {.async.} =
-  let head = await socket.recv(2)
-  doAssert head.len == 2
+  let head = await socket.receiveExact(2)
   doAssert (uint8(head[1]) and 0x80) != 0
   var size = int(uint8(head[1]) and 0x7f)
   if size == 126:
-    let extended = await socket.recv(2)
+    let extended = await socket.receiveExact(2)
     size = (int(uint8(extended[0])) shl 8) or int(uint8(extended[1]))
   elif size == 127:
-    let extended = await socket.recv(8)
+    let extended = await socket.receiveExact(8)
     var longSize = 0'u64
     for value in extended:
       longSize = (longSize shl 8) or uint64(uint8(value))
     doAssert longSize <= uint64(high(int))
     size = int(longSize)
-  let mask = await socket.recv(4)
-  let payload = await socket.recv(size)
+  let mask = await socket.receiveExact(4)
+  let payload = await socket.receiveExact(size)
   for index, value in payload:
     result.add char(uint8(value) xor uint8(mask[index mod 4]))
 
@@ -305,7 +310,8 @@ suite "WebSocket transport":
       check (await client.post(url, "request")).body == "reply"
     discard waitFor withFrameServer(
       @[serverFrame("ping", 9), serverFrame("reply")],
-      action
+      action,
+      waitAfter = true
     )
 
   test "frames split across TCP reads are reconstructed":
