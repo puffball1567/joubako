@@ -1,5 +1,5 @@
 import std/[asyncdispatch, asyncnet, base64, json, nativesockets]
-import ../[transport, types]
+import ../[chunkconsumer, transport, types]
 
 type
   UnixIpcTransport* = ref object of Transport
@@ -137,6 +137,12 @@ proc exchange(
     request: Request;
     socket: AsyncSocket
 ): Future[Response] {.async.} =
+  if request.multipartParts.len > 0:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "file-backed multipart requests require the HTTP transport",
+      request.url
+    )
   when defined(posix):
     await socket.connectUnix(transport.socketPath)
   else:
@@ -165,8 +171,7 @@ proc exchange(
     request.options.onDownloadProgress(
       int64(result.body.len), int64(result.body.len)
     )
-  if not request.options.onDownloadChunk.isNil:
-    request.options.onDownloadChunk(result.body)
+  await request.consumeDownloadChunk(result.body)
   if request.options.streamResponse:
     result.body = ""
 

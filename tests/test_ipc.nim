@@ -6,6 +6,7 @@ import ./result_test_helpers
 when defined(posix):
   type IpcProgressCapture = ref object
     chunk: string
+    asyncChunk: string
     download: tuple[done, total: int64]
     upload: tuple[done, total: int64]
 
@@ -14,6 +15,11 @@ when defined(posix):
     result.streamResponse = true
     result.onDownloadChunk =
       proc(value: string) = capture.chunk.add value
+    result.onDownloadChunkAsync =
+      proc(value: string): Future[void] =
+        capture.asyncChunk.add value
+        result = newFuture[void]("test.ipcAsyncChunk")
+        result.complete()
     result.onDownloadProgress =
       proc(done, total: int64) = capture.download = (done, total)
     result.onUploadProgress =
@@ -329,6 +335,7 @@ when defined(posix):
         let response = await client.post("/ipc", "sent", options = options)
         check response.body == ""
         check capture.chunk == "streamed"
+        check capture.asyncChunk == "streamed"
         check capture.download == (8'i64, 8'i64)
         check capture.upload == (4'i64, 4'i64)
       waitFor withServer(path, handler, action)

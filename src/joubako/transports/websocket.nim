@@ -3,7 +3,7 @@ import std/[asyncdispatch, asyncnet, base64, monotimes, net, strutils, sysrand,
 {.push warning[Deprecated]: off.}
 import std/sha1
 {.pop.}
-import ../[transport, types]
+import ../[chunkconsumer, transport, types]
 
 const WebSocketMagic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -221,9 +221,11 @@ proc sendText*(websocket: WebSocket; message: string): Future[void] {.async.} =
   await websocket.socket.send(encodeFrame(1, message))
 
 proc receiveExact(socket: AsyncSocket; size: int): Future[string] {.async.} =
-  result = await socket.recv(size)
-  if result.len != size:
-    raise newException(IOError, "WebSocket peer disconnected during a frame")
+  while result.len < size:
+    let chunk = await socket.recv(size - result.len)
+    if chunk.len == 0:
+      raise newException(IOError, "WebSocket peer disconnected during a frame")
+    result.add chunk
 
 proc receiveMessage*(
     websocket: WebSocket;
@@ -311,6 +313,12 @@ method send*(
     transport: WebSocketTransport;
     request: Request
 ): Future[Response] {.async.} =
+  if request.multipartParts.len > 0:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "file-backed multipart requests require the HTTP transport",
+      request.url
+    )
   let started = getMonoTime()
   let parsed = parseUri(request.url)
   if not isHostAllowed(parsed.hostname, request.options.allowedHosts):
@@ -341,8 +349,7 @@ method send*(
         int64(request.body.len), int64(request.body.len)
       )
     result = await websocket.receiveMessage(limit)
-    if not request.options.onDownloadChunk.isNil:
-      request.options.onDownloadChunk(result)
+    await request.consumeDownloadChunk(result)
     if not request.options.onDownloadProgress.isNil:
       request.options.onDownloadProgress(int64(result.len), int64(result.len))
     if request.options.streamResponse:

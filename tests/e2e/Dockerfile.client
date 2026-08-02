@@ -1,0 +1,30 @@
+FROM nimlang/nim:2.2.10
+
+RUN git clone --depth 1 --branch v0.5.0 \
+      https://github.com/puffball1567/flowbrigade.git /deps/flowbrigade \
+    && git clone --depth 1 --branch v0.2.0 \
+      https://github.com/puffball1567/nifkit.git /deps/nifkit \
+    && git clone --depth 1 --branch v0.2.0 --recurse-submodules \
+      https://github.com/status-im/nim-zlib.git /deps/zlib \
+    && git clone --depth 1 --branch v0.4.2 \
+      https://github.com/status-im/nim-stew.git /deps/stew \
+    && git clone --depth 1 --branch v0.5.1 \
+      https://github.com/arnetheduck/nim-results.git /deps/results \
+    && git clone --depth 1 --branch v0.2.5 \
+      https://github.com/status-im/nim-unittest2.git /deps/unittest2
+
+WORKDIR /workspace/joubako
+COPY . .
+
+RUN nimble develop -y -a:/deps/flowbrigade \
+    && nimble develop -y -a:/deps/nifkit \
+    && nimble develop -y -a:/deps/results \
+    && nimble develop -y -a:/deps/unittest2 \
+    && nimble develop -y -a:/deps/stew \
+    && nimble develop -y -a:/deps/zlib \
+    && nimble --legacy --offline setup \
+    && nim c -d:release --mm:arc --path:src \
+      --out:/usr/local/bin/joubako-e2e tests/e2e/client.nim
+
+CMD ["/usr/local/bin/joubako-e2e"]
+

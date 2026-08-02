@@ -4,6 +4,8 @@ import flowbrigade/[backoff, retry]
 type
   ProgressProc* = proc(transferred, total: int64) {.closure.}
   DownloadChunkProc* = proc(chunk: string) {.closure.}
+  AsyncDownloadChunkProc* =
+    proc(chunk: string): Future[void] {.closure.}
 
   IdempotencyMode* = enum
     imDefault,
@@ -21,6 +23,15 @@ type
 
   RequestMethod* = enum
     rmGet, rmHead, rmPost, rmPut, rmPatch, rmDelete, rmOptions
+
+  MultipartPart* = object
+    ## Buffered parts use `body`. A non-empty `filePath` is opened and streamed
+    ## by transports that support file-backed multipart requests.
+    name*: string
+    filename*: string
+    contentType*: string
+    body*: string
+    filePath*: string
 
   Headers* = object
     values: OrderedTable[string, seq[string]]
@@ -52,6 +63,9 @@ type
     onUploadProgress*: ProgressProc
     onDownloadProgress*: ProgressProc
     onDownloadChunk*: DownloadChunkProc
+    ## Awaited before reading the next chunk, providing asynchronous
+    ## backpressure for file and pipeline consumers.
+    onDownloadChunkAsync*: AsyncDownloadChunkProc
     ## Delivers chunks without retaining them in `Response.body`.
     streamResponse*: bool
 
@@ -60,6 +74,7 @@ type
     url*: string
     headers*: Headers
     body*: string
+    multipartParts*: seq[MultipartPart]
     options*: RequestOptions
 
   Response* = object
@@ -69,6 +84,14 @@ type
     body*: string
     request*: Request
 
+  ErrorResponse* = object
+    ## Bounded response data retained for an HTTP status error. This omits the
+    ## originating Request so credentials and request bodies are not retained.
+    status*: int
+    statusText*: string
+    headers*: Headers
+    body*: string
+
   ErrorKind* = enum
     jeInvalidRequest,
     jeTransport,
@@ -77,6 +100,8 @@ type
     jeHttpStatus,
     jeBodyTooLarge,
     jeCodec,
+    jeCompression,
+    jeStream,
     jeCircuitOpen,
     jeRateLimited,
     jeBulkheadRejected
@@ -85,8 +110,17 @@ type
     kind*: ErrorKind
     status*: int
     url*: string
+    ## Optional machine-readable code and byte offset supplied by a codec.
+    ## `codecOffset` is -1 when the codec did not identify a byte position.
+    codecCode*: string
+    codecOffset*: int
     ## Parsed Retry-After delay in milliseconds, or -1 when absent/invalid.
     retryAfterMs*: int64
+    ## True when `response` contains an HTTP response received from the peer.
+    hasResponse*: bool
+    response*: ErrorResponse
+    ## Number of transport attempts completed for this logical request.
+    attempts*: int
 
 func normalizeHeader(name: string): string =
   name.strip.toLowerAscii
@@ -135,6 +169,14 @@ iterator pairs*(headers: Headers): tuple[name, value: string] =
 proc merge*(target: var Headers; source: Headers) =
   for name, value in source.pairs:
     target.add(name, value)
+
+proc toErrorResponse*(response: Response): ErrorResponse =
+  ## Creates an independent response snapshot without retaining its Request.
+  result.status = response.status
+  result.statusText = response.statusText
+  result.headers = initHeaders()
+  result.headers.merge(response.headers)
+  result.body = response.body
 
 proc overlay*(target: var Headers; source: Headers) =
   ## Replaces matching target headers while retaining multiple source values.
@@ -194,6 +236,15 @@ proc newJoubakoError*(
   result.url = url
   result.status = status
   result.retryAfterMs = retryAfterMs
+  result.codecOffset = -1
+
+proc attachResponse*(error: ref JoubakoError; response: Response) =
+  ## Retains bounded peer response data without the originating Request.
+  if error == nil:
+    return
+  error.hasResponse = true
+  error.response = response.toErrorResponse()
+  error.status = response.status
 
 func `$`*(httpMethod: RequestMethod): string =
   case httpMethod

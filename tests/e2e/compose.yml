@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: backend
+    environment:
+      JOUBAKO_E2E_ROLE: backend
+      JOUBAKO_E2E_REDIRECT_URL: http://redirect:8080/inspect
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=1)"
+      interval: 1s
+      timeout: 2s
+      retries: 20
+
+  redirect:
+    build:
+      context: backend
+    environment:
+      JOUBAKO_E2E_ROLE: redirect
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=1)"
+      interval: 1s
+      timeout: 2s
+      retries: 20
+
+  client:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.client
+    depends_on:
+      backend:
+        condition: service_healthy
+      redirect:
+        condition: service_healthy
+

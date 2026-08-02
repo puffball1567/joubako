@@ -314,6 +314,11 @@ suite "New request option inheritance":
     var defaults = defaultRequestOptions()
     defaults.streamResponse = true
     defaults.onDownloadChunk = proc(chunk: string) = discard chunk
+    defaults.onDownloadChunkAsync =
+      proc(chunk: string): Future[void] =
+        discard chunk
+        result = newFuture[void]("test.defaultAsyncChunk")
+        result.complete()
     defaults.onUploadProgress =
       proc(transferred, total: int64) =
         discard transferred
@@ -325,4 +330,5 @@ suite "New request option inheritance":
     discard waitFor client.get("/")
     check seen.streamResponse
     check not seen.onDownloadChunk.isNil
+    check not seen.onDownloadChunkAsync.isNil
     check not seen.onUploadProgress.isNil

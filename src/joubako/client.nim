@@ -189,7 +189,8 @@ proc requestResult(
     path: string;
     body = "";
     headers = initHeaders();
-    options: RequestOptions = RequestOptions()
+    options: RequestOptions = RequestOptions();
+    multipartParts: seq[MultipartPart] = @[]
 ): Future[JResult[Response]] {.async.} =
   if client == nil or client.transport == nil:
     return err[Response](newJoubakoError(
@@ -223,6 +224,8 @@ proc requestResult(
     effectiveOptions.onDownloadProgress = options.onDownloadProgress
   if not options.onDownloadChunk.isNil:
     effectiveOptions.onDownloadChunk = options.onDownloadChunk
+  if not options.onDownloadChunkAsync.isNil:
+    effectiveOptions.onDownloadChunkAsync = options.onDownloadChunkAsync
   if options.streamResponse:
     effectiveOptions.streamResponse = true
 
@@ -237,6 +240,7 @@ proc requestResult(
     url: url,
     headers: mergedHeaders,
     body: body,
+    multipartParts: multipartParts,
     options: effectiveOptions
   )
 
@@ -276,6 +280,46 @@ proc requestResult(
         "request contains an invalid header",
         request.url
       ))
+
+  if request.multipartParts.len > 0:
+    if request.body.len > 0:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "multipart requests cannot also contain a buffered body",
+        request.url
+      ))
+    if request.headers.contains("content-type"):
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "file-backed multipart content type and boundary are generated automatically",
+        request.url
+      ))
+    for part in request.multipartParts:
+      if part.name.len == 0 or
+          part.name.contains({'\r', '\n', '"'}):
+        return err[Response](newJoubakoError(
+          jeInvalidRequest, "invalid multipart field name", request.url
+        ))
+      if part.filename.contains({'\r', '\n', '"'}):
+        return err[Response](newJoubakoError(
+          jeInvalidRequest, "invalid multipart filename", request.url
+        ))
+      if part.contentType.contains({'\r', '\n'}):
+        return err[Response](newJoubakoError(
+          jeInvalidRequest, "invalid multipart content type", request.url
+        ))
+      if part.filePath.len > 0 and part.filename.len == 0:
+        return err[Response](newJoubakoError(
+          jeInvalidRequest,
+          "file-backed multipart part has no transmitted filename",
+          request.url
+        ))
+      if part.filePath.len > 0 and part.body.len > 0:
+        return err[Response](newJoubakoError(
+          jeInvalidRequest,
+          "file-backed multipart part cannot also contain buffered data",
+          request.url
+        ))
 
   if request.options.maxRequestBytes >= 0 and
       request.body.len > request.options.maxRequestBytes:
@@ -336,6 +380,7 @@ proc requestResult(
     else:
       Deadline()
 
+  var completedAttempts = 0
   proc executeAttempt(): Future[JResult[Response]] {.async.} =
     var attemptRequest = request
     if retryDeadline.isInitialized:
@@ -348,6 +393,7 @@ proc requestResult(
         ))
       attemptRequest.options.timeoutMs = remainingMs
 
+    inc completedAttempts
     var transportFuture: Future[Response]
     try:
       transportFuture = client.transport.send(attemptRequest)
@@ -389,13 +435,15 @@ proc requestResult(
           jeInvalidRequest, request.url
         ))
       if not accepted:
-        return err[Response](newJoubakoError(
+        let statusError = newJoubakoError(
           jeHttpStatus,
           "HTTP request failed with status " & $response.status,
           request.url,
           response.status,
           parseRetryAfterMs(response.headers.get("retry-after"))
-        ))
+        )
+        statusError.attachResponse(response)
+        return err[Response](statusError)
     return ok(response)
 
   var attemptResult: JResult[Response]
@@ -415,6 +463,7 @@ proc requestResult(
           ))
         break
       let failure = attemptResult.error
+      failure.attempts = completedAttempts
       if not request.options.retry.observer.isNil:
         request.options.retry.observer(RetryEvent(
           kind: retryAttemptFailed, attempt: attempt, error: failure
@@ -446,11 +495,14 @@ proc requestResult(
       )
       let waited = await settle(fallible(waiting), jeTimeout, request.url)
       if waited.isErr:
+        waited.error.attempts = completedAttempts
         attemptResult = err[Response](waited.error)
         break
       inc attempt
   else:
     attemptResult = await executeAttempt()
+    if attemptResult.isErr:
+      attemptResult.error.attempts = completedAttempts
 
   if circuitAdmitted:
     if attemptResult.isOk:
@@ -464,36 +516,44 @@ proc requestResult(
         admittedCircuit[].recordSuccess()
 
   if attemptResult.isErr:
+    attemptResult.error.attempts = completedAttempts
     return err[Response](attemptResult.error)
   var response = attemptResult.value
 
   for entry in client.responseInterceptors:
     if request.options.cancellation != nil and
         request.options.cancellation.cancelled:
-      return err[Response](newJoubakoError(
+      let cancellationError = newJoubakoError(
         jeCancelled, request.options.cancellation.reason, request.url
-      ))
+      )
+      cancellationError.attempts = completedAttempts
+      return err[Response](cancellationError)
     var intercepted: Future[Response]
     try:
       intercepted = entry.handler(response)
     except CatchableError as error:
-      return err[Response](error.asJoubakoError(jeTransport, request.url))
+      let interceptorError = error.asJoubakoError(jeTransport, request.url)
+      interceptorError.attempts = completedAttempts
+      return err[Response](interceptorError)
     let interceptorResult = await settle(
       fallible(intercepted), jeTransport, request.url
     )
     if interceptorResult.isErr:
+      interceptorResult.error.attempts = completedAttempts
       return err[Response](interceptorResult.error)
     response = interceptorResult.value
     response.request = request
 
   if request.options.maxResponseBytes >= 0 and
       response.body.len > request.options.maxResponseBytes:
-    return err[Response](newJoubakoError(
+    let limitError = newJoubakoError(
       jeBodyTooLarge,
       "response interceptor produced a body over the configured limit",
       request.url,
       response.status
-    ))
+    )
+    limitError.attempts = completedAttempts
+    return err[Response](limitError)
   return ok(response)
 
 proc request*(
@@ -509,6 +569,28 @@ proc request*(
       httpMethod, path, body, headers, options
     )),
     jeTransport, path
+  )
+
+proc requestMultipart*(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    parts: seq[MultipartPart];
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions()
+): Future[JResult[Response]] =
+  ## Dispatches multipart metadata without materializing file-backed parts.
+  ## The HTTP transport supplies the boundary and streams each file path.
+  settleResult(
+    fallible(client.requestResult(
+      httpMethod,
+      path,
+      headers = headers,
+      options = options,
+      multipartParts = parts
+    )),
+    jeTransport,
+    path
   )
 
 proc get*(
