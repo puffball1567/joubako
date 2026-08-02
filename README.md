@@ -1,9 +1,49 @@
 # Joubako
 
-Joubako is a typed, asynchronous transport client for native Nim
-applications. It combines the familiar request-client features of libraries
-such as Axios with Nim's native `Future` type and a transport-independent
-design.
+## Async networking, finally built for Nim.
+
+**Axios-style flow. Native `await`. Typed failures. Deterministic ARC.**
+
+Joubako is the native async transport client for Nim. It replaces transport
+plumbing with clear application code—and keeps that code in control when the
+network fails, stalls, redirects, retries, or sends more data than promised.
+
+Write requests in a straight line. Launch independent work together. Chain
+callbacks without callback hell. Stream large bodies without retaining them.
+Carry the same lifecycle and error model across HTTP, WebSockets, local IPC,
+and in-process calls.
+
+## Write less plumbing. Ship stronger clients.
+
+- **Read async code like synchronous code.** Standard Nim `await`. No custom
+  runtime. No custom await operator.
+- **Own every operational failure.** Transport, timeout, cancellation, HTTP,
+  size, and codec failures become typed `JResult.Err` values.
+- **Compose without callback hell.** Use `then`, `catch`, `finally`, and `all`
+  when event-driven code fits better than sequential awaits.
+- **Survive real networks.** Verified TLS, bounded streaming and decompression,
+  safe redirects, proxies, retry, circuit breakers, rate limits, and bulkheads
+  are built in.
+- **Keep memory behavior predictable.** Joubako is developed with deterministic
+  ARC and hammered under Valgrind on success and failure paths.
+- **Use one model everywhere.** Typed JSON, pluggable codecs, NIF/BIF,
+  multipart uploads, WebSockets, Unix-domain IPC, and in-process transports all
+  speak the same request, result, cancellation, and deadline language.
+
+From a single GET to a resilient native service client, Joubako keeps the code
+clear and the network under control.
+
+## Name and pronunciation
+
+**Joubako** is pronounced **“JOH-bah-koh”**—`jōbako` in romanized Japanese,
+or **じょうばこ（状箱）** in Japanese.
+
+A joubako is a small box for carrying letters, including letters entrusted to
+a messenger. This Joubako carries application requests and responses across
+process and network boundaries: typed, protected, and delivered to their
+destination.
+
+## Architecture and dependencies
 
 Joubako depends on FlowBrigade 0.5 or newer for generic resilience mechanisms
 such as asynchronous retry, backoff, deadlines, circuit breakers, rate limits,
