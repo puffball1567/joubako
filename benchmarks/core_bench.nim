@@ -16,18 +16,19 @@ proc benchRequests(): Future[void] {.async.} =
   let client = newClient(transport, "inprocess://benchmark/")
   let started = getMonoTime()
   for index in 0 ..< Iterations:
-    discard await client.get("items/" & $index)
+    let outcome = await client.get("items/" & $index)
+    doAssert outcome.isOk
   report("request construction and dispatch", started, Iterations)
 
 proc benchCallbacks(): Future[void] {.async.} =
   let started = getMonoTime()
   for index in 0 ..< Iterations:
-    let source = newFuture[int]("core_bench.callback")
-    source.complete(index)
-    discard await source
+    let outcome = await completedResult(ok(index))
       .then(proc(value: int): int = value + 1)
       .then(proc(value: int): int = value * 2)
       .finally(proc() = discard)
+    doAssert outcome.isOk
+    doAssert outcome.value == (index + 1) * 2
   report("then/finally callback dispatch", started, Iterations)
 
 proc benchCodec() =
@@ -66,7 +67,8 @@ proc benchRetry(): Future[void] {.async.} =
   let started = getMonoTime()
   for index in 0 ..< iterations:
     discard index
-    discard await client.get("/", options = options)
+    let outcome = await client.get("/", options = options)
+    doAssert outcome.isOk
   report("one-failure retry path", started, iterations)
 
 when isMainModule:

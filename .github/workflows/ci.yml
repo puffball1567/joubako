@@ -83,6 +83,8 @@ jobs:
         run: |
           nimble check
           nim check --mm:arc --path:src src/joubako.nim
+          nim check --mm:arc --path:src examples/basic.nim
+          nim check --mm:arc --path:src benchmarks/core_bench.nim
 
       - name: Run tests
         run: nimble --legacy --offline test

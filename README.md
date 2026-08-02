@@ -13,6 +13,37 @@ nim-zlib 0.2 or newer and its bundled zlib implementation.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
+## Installation
+
+Joubako requires Nim 2.2 or newer and is developed with ARC. After the first
+release is published, install it and its declared dependencies through Nimble:
+
+```sh
+nimble install joubako
+```
+
+Then import the public entry point:
+
+```nim
+import std/asyncdispatch
+import joubako
+
+proc main() {.async.} =
+  let api = newClient(newHttpTransport(), "https://api.example.com/")
+  let response = await api.get("health")
+  if response.isErr:
+    echo response.error.msg
+  else:
+    echo response.value.status
+
+waitFor main()
+```
+
+HTTPS and WSS support require compiling the application with `-d:ssl`. Plain
+HTTP, in-process transport, codecs, and the common request API do not require
+that define. The same program is available as
+[`examples/basic.nim`](examples/basic.nim).
+
 ## Local dependency setup
 
 In this workspace, FlowBrigade is developed in the adjacent `timekeeper`
