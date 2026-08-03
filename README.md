@@ -102,8 +102,10 @@ remain available without `-d:ssl`. The example above is available as
 
 For complete client-and-server examples, see the
 [`examples/frameworks`](examples/frameworks/README.md) demos. One shared
-Joubako client calls equivalent APIs implemented with Express, Flask, and
-Laravel, including typed JSON, custom headers, validation, and HTTP error
+Joubako client calls equivalent APIs implemented with **Express, NestJS,
+Flask, FastAPI, Laravel, Prologue, and nim-basolato**. The same ARC client is
+verified through real HTTP communication across Node.js, TypeScript, Python,
+PHP, and Nim—including typed JSON, custom headers, validation, and HTTP error
 handling.
 
 ## Local dependency setup

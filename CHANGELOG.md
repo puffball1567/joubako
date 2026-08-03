@@ -9,8 +9,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
-- Runnable Express, Flask, and Laravel integration demos sharing one typed
-  Joubako client and API contract.
+- Runnable Express, NestJS, Flask, FastAPI, Laravel, Prologue, and nim-basolato
+  integration demos sharing one typed Joubako client and API contract.
+- A cross-framework live scenario covering typed JSON, JSON request encoding,
+  custom headers, `201` creation, `422` validation, and typed `404` failures.
 
 ## [0.1.0] - 2026-08-02
 
