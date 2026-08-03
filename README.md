@@ -100,6 +100,14 @@ Plain HTTP, Unix IPC, in-process transport, codecs, and the common request API
 remain available without `-d:ssl`. The example above is available as
 [`examples/basic.nim`](examples/basic.nim).
 
+For complete client-and-server examples, see the
+[`examples/frameworks`](examples/frameworks/README.md) demos. One shared
+Joubako client calls equivalent APIs implemented with **Express, NestJS,
+Flask, FastAPI, Laravel, Prologue, and nim-basolato**. The same ARC client is
+verified through real HTTP communication across Node.js, TypeScript, Python,
+PHP, and Nim—including typed JSON, custom headers, validation, and HTTP error
+handling.
+
 ## Local dependency setup
 
 In this workspace, FlowBrigade is developed in the adjacent `timekeeper`
@@ -711,3 +719,10 @@ nimble benchmark
 The local benchmark reports request construction/dispatch, typed JSON decode,
 Promise callback dispatch, and one-failure retry overhead separately from
 network latency.
+
+## License
+
+Joubako is licensed under the
+[Apache License 2.0](LICENSE). Third-party components retain their respective
+licenses as documented in
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).

@@ -1,9 +1,9 @@
 import std/os
 
-version       = "0.1.0"
+version       = "0.1.1"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
-license       = "MIT"
+license       = "Apache-2.0"
 srcDir        = "src"
 
 requires "nim >= 2.2.0"

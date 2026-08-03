@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-03
+
+### Added
+
+- Runnable Express, NestJS, Flask, FastAPI, Laravel, Prologue, and nim-basolato
+  integration demos sharing one typed Joubako client and API contract.
+- A cross-framework live scenario covering typed JSON, JSON request encoding,
+  custom headers, `201` creation, `422` validation, and typed `404` failures.
+
+### Changed
+
+- Changed the Joubako project license from MIT to Apache License 2.0. Releases
+  through `v0.1.0` remain available under their original MIT terms.
+
 ## [0.1.0] - 2026-08-02
 
 ### Added
