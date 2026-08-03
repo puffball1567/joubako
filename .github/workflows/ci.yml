@@ -93,6 +93,7 @@ jobs:
         run: |
           nim check --mm:arc --path:src src/joubako.nim
           nim check --mm:arc --path:src examples/basic.nim
+          nim check --mm:arc --path:src examples/frameworks/client.nim
           nim check --mm:arc --path:src benchmarks/core_bench.nim
 
       - name: Run tests with Nim 2.2 Nimble
@@ -179,6 +180,7 @@ jobs:
       - name: Build and test with SSL
         run: |
           nim c -d:ssl --mm:arc --path:src src/joubako.nim
+          nim c -d:ssl --mm:arc --path:src examples/frameworks/client.nim
           nim c -r -d:ssl --mm:arc --path:src tests/test_tls_options.nim
           nim c -r -d:ssl --mm:arc --path:src tests/test_http.nim
           nimble --legacy --offline testSsl

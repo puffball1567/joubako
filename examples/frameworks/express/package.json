@@ -1,0 +1,14 @@
+{
+  "name": "joubako-express-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.0.0"
+  }
+}
