@@ -100,6 +100,12 @@ Plain HTTP, Unix IPC, in-process transport, codecs, and the common request API
 remain available without `-d:ssl`. The example above is available as
 [`examples/basic.nim`](examples/basic.nim).
 
+For complete client-and-server examples, see the
+[`examples/frameworks`](examples/frameworks/README.md) demos. One shared
+Joubako client calls equivalent APIs implemented with Express, Flask, and
+Laravel, including typed JSON, custom headers, validation, and HTTP error
+handling.
+
 ## Local dependency setup
 
 In this workspace, FlowBrigade is developed in the adjacent `timekeeper`

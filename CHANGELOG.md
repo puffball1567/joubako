@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Runnable Express, Flask, and Laravel integration demos sharing one typed
+  Joubako client and API contract.
+
 ## [0.1.0] - 2026-08-02
 
 ### Added
