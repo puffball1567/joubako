@@ -719,3 +719,10 @@ nimble benchmark
 The local benchmark reports request construction/dispatch, typed JSON decode,
 Promise callback dispatch, and one-failure retry overhead separately from
 network latency.
+
+## License
+
+Joubako is licensed under the
+[Apache License 2.0](LICENSE). Third-party components retain their respective
+licenses as documented in
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
