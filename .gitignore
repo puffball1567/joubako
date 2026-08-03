@@ -2,6 +2,9 @@ nimcache/
 nimble.develop
 nimble.paths
 nimbledeps/
+__pycache__/
+node_modules/
+examples/frameworks/nestjs/dist/
 tests/test_all
 tests/test_flowbrigade_dependency
 tests/test_http

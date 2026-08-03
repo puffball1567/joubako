@@ -37,6 +37,7 @@ proc main() {.async.} =
   let api = newClient(transport, baseUrl)
 
   var headers = initHeaders()
+  headers.set("accept", "application/json")
   headers.set("x-joubako-demo", "framework-client")
 
   let health = requireOk(
@@ -62,6 +63,16 @@ proc main() {.async.} =
   )
   doAssert created.accepted
   doAssert created.client == "framework-client"
+
+  let invalid = await api.postJson(
+    "api/messages",
+    MessageRequest(text: "Invalid priority", priority: 0),
+    MessageResponse,
+    headers
+  )
+  doAssert invalid.isErr
+  doAssert invalid.error.kind == jeHttpStatus
+  doAssert invalid.error.status == 422
 
   let missing = await api.get("api/users/999", headers)
   doAssert missing.isErr
