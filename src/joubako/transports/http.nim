@@ -45,6 +45,9 @@ type
 func defaultTlsOptions*(): TlsOptions =
   TlsOptions(verifyMode: tvmPeer)
 
+method usesImplicitCredentials*(transport: HttpTransport): bool =
+  transport != nil and transport.cookieJar != nil
+
 proc `=copy`(destination: var PooledConnection; source: PooledConnection) {.
   error: "PooledConnection owns a TLS context and cannot be copied".}
 

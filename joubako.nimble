@@ -36,6 +36,7 @@ task test, "Run the Joubako test suite":
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-result-client-nimcache") & " --out:" & temporary("joubako-test-result-client") & " tests/test_result_client.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-sse-nimcache") & " --out:" & temporary("joubako-test-sse") & " tests/test_sse.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-opentelemetry-nimcache") & " --out:" & temporary("joubako-test-opentelemetry") & " tests/test_opentelemetry.nim"
+  exec "nim c -r --path:src --nimcache:" & temporary("joubako-httpcache-nimcache") & " --out:" & temporary("joubako-test-httpcache") & " tests/test_httpcache.nim"
 
 task testSsl, "Run TLS, mTLS, and SOCKS5h integration tests":
   exec "nim c -r -d:ssl --mm:arc --path:src --nimcache:" & temporary("joubako-secure-transport-nimcache") & " --out:" & temporary("joubako-test-secure-transport") & " tests/test_secure_transport.nim"
@@ -82,3 +83,5 @@ task leak, "Run ARC success and Result-error lifecycle probes under Valgrind":
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-sse-leak-probe")
   exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-opentelemetry-leak-nimcache") & " --out:" & temporary("joubako-opentelemetry-leak-probe") & " tests/opentelemetry_leak_probe.nim"
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-opentelemetry-leak-probe")
+  exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-httpcache-leak-nimcache") & " --out:" & temporary("joubako-httpcache-leak-probe") & " tests/httpcache_leak_probe.nim"
+  exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-httpcache-leak-probe")

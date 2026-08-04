@@ -91,6 +91,8 @@ type
     request*: Request
     ## Number of transport attempts used by the logical request.
     attempts*: int
+    fromCache*: bool
+    cacheRevalidated*: bool
 
   ErrorResponse* = object
     ## Bounded response data retained for an HTTP status error. This omits the

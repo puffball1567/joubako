@@ -150,6 +150,8 @@ The current implementation includes:
 - FlowBrigade circuit-breaker, rate-limit, and bulkhead guards;
 - OpenTelemetry-compatible HTTP CLIENT spans and W3C trace-context
   propagation without a mandatory telemetry SDK;
+- bounded private HTTP caching with freshness, Vary, conditional
+  revalidation, and pluggable storage;
 - URL-encoded forms, multipart bodies, authentication helpers, and progress
   callbacks;
 - pluggable per-request codecs;
@@ -510,6 +512,39 @@ Domain matching validates that the response host covers the requested Domain,
 but Joubako does not bundle a public-suffix list. Applications accepting
 untrusted Domain attributes should enforce their own registrable-domain policy
 or use host-only cookies.
+
+### HTTP cache
+
+Wrap a transport with `CachingTransport` to enable a bounded private cache.
+The standard memory store is LRU-bounded by entry count, total bytes, and
+per-entry bytes; applications can implement `HttpCacheStore` to use a file,
+database, or platform cache instead.
+
+```nim
+let cache = newMemoryHttpCache(
+  maxEntries = 256,
+  maxBytes = 64 * 1024 * 1024
+)
+let transport = newCachingTransport(newHttpTransport(), cache)
+let api = newClient(transport, "https://api.example.com/")
+
+let response = await api.get("catalog")
+if response.isOk and response.value.fromCache:
+  echo "served without a network round trip"
+```
+
+The cache honors `Cache-Control: max-age`, `no-cache`, `no-store`, and
+`only-if-cached`, plus `Age`, `Date`, `Expires`, `ETag`, `Last-Modified`, and
+`Vary`. A `304 Not Modified` response refreshes cached metadata while retaining
+the bounded body. Successful unsafe methods invalidate their request target
+and same-origin `Location` or `Content-Location` targets.
+
+Streaming and Range requests bypass caching. Requests containing
+`Authorization` or `Cookie`, transports with an internal Cookie jar, and
+responses containing `Set-Cookie` also bypass it by default. A private
+application that deliberately partitions its cache by user may opt in through
+`HttpCacheOptions`; the default never persists those personalized responses.
+Cache-store failures are isolated from network results.
 
 TLS peer verification is enabled by default. Custom trust stores and mutual TLS
 identity can be configured without replacing the HTTP transport:
