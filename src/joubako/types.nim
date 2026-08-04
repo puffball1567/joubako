@@ -89,6 +89,8 @@ type
     headers*: Headers
     body*: string
     request*: Request
+    ## Number of transport attempts used by the logical request.
+    attempts*: int
 
   ErrorResponse* = object
     ## Bounded response data retained for an HTTP status error. This omits the

@@ -1,7 +1,7 @@
 import std/[asyncdispatch, strutils, times, uri]
 import flowbrigade/[backoff, bulkhead, circuit_breaker, retry, timeout]
 import flowbrigade/ratelimit/token_bucket
-import ./[http_retry, query, result, transport, types]
+import ./[http_retry, opentelemetry, query, result, transport, types]
 
 type
   StatusValidator* = proc(status: int): bool {.closure.}
@@ -30,6 +30,19 @@ type
     circuitBreaker: ref CircuitBreaker
     bulkhead: ref Bulkhead
     rateLimiter: ref TokenBucket
+    telemetry: OpenTelemetryConfig
+
+proc useOpenTelemetry*(
+    client: Client;
+    observer: OpenTelemetryObserverProc;
+    options = defaultOpenTelemetryOptions()
+) =
+  if client != nil:
+    client.telemetry = newOpenTelemetryConfig(observer, options)
+
+proc clearOpenTelemetry*(client: Client) =
+  if client != nil:
+    client.telemetry = nil
 
 proc useCircuitBreaker*(
     client: Client;
@@ -521,6 +534,7 @@ proc requestResult(
     attemptResult.error.attempts = completedAttempts
     return err[Response](attemptResult.error)
   var response = attemptResult.value
+  response.attempts = completedAttempts
 
   for entry in client.responseInterceptors:
     if request.options.cancellation != nil and
@@ -545,6 +559,7 @@ proc requestResult(
       return err[Response](interceptorResult.error)
     response = interceptorResult.value
     response.request = request
+    response.attempts = completedAttempts
 
   if request.options.maxResponseBytes >= 0 and
       response.body.len > request.options.maxResponseBytes:
@@ -558,6 +573,64 @@ proc requestResult(
     return err[Response](limitError)
   return ok(response)
 
+proc observedRequestResult(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    body = "";
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions();
+    multipartParts: seq[MultipartPart] = @[]
+): Future[JResult[Response]] {.async.} =
+  var tracedHeaders = initHeaders()
+  tracedHeaders.merge(headers)
+  var propagationHeaders = initHeaders()
+  if client != nil:
+    propagationHeaders.merge(client.defaultHeaders)
+  propagationHeaders.overlay(headers)
+  let resolvedUrl =
+    if client == nil: path
+    else: client.resolveUrl(path)
+  let telemetry = if client == nil: nil else: client.telemetry
+  let span = startHttpClientSpan(
+    telemetry,
+    httpMethod,
+    resolvedUrl,
+    propagationHeaders,
+    tracedHeaders
+  )
+  let outcome = await settleResult(
+    fallible(client.requestResult(
+      httpMethod,
+      path,
+      body,
+      tracedHeaders,
+      options,
+      multipartParts
+    )),
+    jeTransport,
+    path
+  )
+  if span != nil:
+    if outcome.isOk:
+      finishHttpClientSpan(
+        telemetry,
+        span,
+        outcome.value.request.url,
+        outcome.value.status,
+        outcome.value.attempts
+      )
+    else:
+      finishHttpClientSpan(
+        telemetry,
+        span,
+        outcome.error.url,
+        outcome.error.status,
+        outcome.error.attempts,
+        outcome.error
+      )
+  return outcome
+
 proc request*(
     client: Client;
     httpMethod: RequestMethod;
@@ -567,10 +640,11 @@ proc request*(
     options: RequestOptions = RequestOptions()
 ): Future[JResult[Response]] =
   settleResult(
-    fallible(client.requestResult(
+    fallible(client.observedRequestResult(
       httpMethod, path, body, headers, options
     )),
-    jeTransport, path
+    jeTransport,
+    path
   )
 
 proc requestMultipart*(
@@ -584,7 +658,7 @@ proc requestMultipart*(
   ## Dispatches multipart metadata without materializing file-backed parts.
   ## The HTTP transport supplies the boundary and streams each file path.
   settleResult(
-    fallible(client.requestResult(
+    fallible(client.observedRequestResult(
       httpMethod,
       path,
       headers = headers,
