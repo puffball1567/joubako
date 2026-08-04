@@ -4,6 +4,12 @@ import ./types
 type
   Transport* = ref object of RootObj
 
+method usesImplicitCredentials*(transport: Transport): bool {.base.} =
+  ## True when a transport may add end-server credentials after request
+  ## interceptors and outer transport wrappers have run.
+  discard transport
+  false
+
 method send*(transport: Transport; request: Request): Future[Response] {.base.} =
   result = newFuture[Response]("Joubako.Transport.send")
   result.fail(newJoubakoError(
