@@ -493,6 +493,19 @@ proc buildResponse(
     raw.headers.getOrDefault("content-encoding")
   let decoded = request.hasResponseBody(int(raw.code)) and
     contentEncoding.isCompressedEncoding
+  var responseHeaders = initHeaders()
+  for name, value in raw.headers.pairs:
+    if not decoded or
+        name.toLowerAscii notin ["content-encoding", "content-length"]:
+      responseHeaders.add(name, value)
+
+  if not request.options.onResponseHeaders.isNil:
+    try:
+      request.options.onResponseHeaders(int(raw.code), responseHeaders)
+    except CatchableError as error:
+      client.close()
+      raise error.asJoubakoError(jeStream, request.url)
+
   if request.options.maxResponseBytes >= 0 and
       not decoded:
     let declaredLength = raw.headers.getOrDefault("content-length")
@@ -509,12 +522,6 @@ proc buildResponse(
         discard
 
   let body = await readBodyBounded(client, raw, request, deadline)
-
-  var responseHeaders = initHeaders()
-  for name, value in raw.headers.pairs:
-    if not decoded or
-        name.toLowerAscii notin ["content-encoding", "content-length"]:
-      responseHeaders.add(name, value)
 
   let statusText =
     if raw.status.len > 3:

@@ -6,6 +6,8 @@ type
   DownloadChunkProc* = proc(chunk: string) {.closure.}
   AsyncDownloadChunkProc* =
     proc(chunk: string): Future[void] {.closure.}
+  ResponseHeadersProc* =
+    proc(status: int; headers: Headers) {.closure.}
 
   IdempotencyMode* = enum
     imDefault,
@@ -66,6 +68,10 @@ type
     ## Awaited before reading the next chunk, providing asynchronous
     ## backpressure for file and pipeline consumers.
     onDownloadChunkAsync*: AsyncDownloadChunkProc
+    ## Runs after response headers arrive and before the first body chunk.
+    ## Streaming protocols can validate status and content type without
+    ## buffering or prematurely delivering a response body.
+    onResponseHeaders*: ResponseHeadersProc
     ## Delivers chunks without retaining them in `Response.body`.
     streamResponse*: bool
 

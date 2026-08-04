@@ -226,6 +226,8 @@ proc requestResult(
     effectiveOptions.onDownloadChunk = options.onDownloadChunk
   if not options.onDownloadChunkAsync.isNil:
     effectiveOptions.onDownloadChunkAsync = options.onDownloadChunkAsync
+  if not options.onResponseHeaders.isNil:
+    effectiveOptions.onResponseHeaders = options.onResponseHeaders
   if options.streamResponse:
     effectiveOptions.streamResponse = true
 

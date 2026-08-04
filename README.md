@@ -134,6 +134,8 @@ The current implementation includes:
 - awaitable HTTP requests returning `Future[JResult[T]]`;
 - event-loop-local HTTP keep-alive reuse with a bounded idle pool;
 - bounded streaming gzip and deflate response decoding;
+- bounded Server-Sent Events parsing with backpressure, cancellation,
+  reconnection, and Last-Event-ID continuity;
 - `then`, `catch`, `finally`, and `all` composition over the same Result-valued
   `Future`;
 - typed JSON encoding and decoding;
@@ -402,6 +404,36 @@ options.onDownloadChunkAsync =
 
 let outcome = await api.get("exports/current", options = options)
 ```
+
+### Server-Sent Events
+
+`subscribeSse` validates `text/event-stream` before delivering the first body
+chunk, parses events across arbitrary transport chunk boundaries, and applies
+backpressure by awaiting asynchronous handlers. It supports comments,
+multi-line `data`, event names, IDs, UTF-8 BOMs, CR/LF variants, server-provided
+`retry` delays, bounded event sizes, cancellation, and `Last-Event-ID` on
+reconnect.
+
+```nim
+var requestOptions = defaultRequestOptions()
+requestOptions.timeoutMs = -1
+requestOptions.cancellation = newCancellationToken()
+
+let subscription = await api.subscribeSse(
+  "/notifications",
+  proc(event: ServerSentEvent): Future[void] {.async.} =
+    echo event.event, ": ", event.data
+  requestOptions = requestOptions
+)
+
+if subscription.isErr:
+  echo subscription.error.msg
+```
+
+`defaultSseOptions()` reconnects until cancellation or an HTTP `204` response.
+Set `maxReconnects` to zero for a one-shot stream or to a finite count for a
+bounded subscription. A successful response with any content type other than
+`text/event-stream` is rejected before its body is delivered as events.
 
 The file helper configures this streaming path and leaves `Response.body`
 empty. A failed download retains the partial file for explicit inspection or
