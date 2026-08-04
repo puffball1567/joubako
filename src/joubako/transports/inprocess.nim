@@ -1,5 +1,5 @@
 import std/asyncdispatch
-import ../[chunkconsumer, transport, types]
+import ../[chunkconsumer, result, transport, types]
 
 type
   InProcessHandler* = proc(request: Request): Future[Response] {.closure.}
@@ -37,6 +37,11 @@ method send*(
       int64(request.body.len), int64(request.body.len)
     )
   result = await transport.handler(request)
+  if not request.options.onResponseHeaders.isNil:
+    try:
+      request.options.onResponseHeaders(result.status, result.headers)
+    except CatchableError as error:
+      raise error.asJoubakoError(jeStream, request.url)
   if request.options.maxResponseBytes >= 0 and
       result.body.len > request.options.maxResponseBytes:
     raise newJoubakoError(
