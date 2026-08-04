@@ -14,6 +14,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | In-process transport | Complete | Deterministic handler transport |
 | WebSocket | Complete | One-shot transport plus long-lived connection primitives |
 | Server-Sent Events | Complete | Bounded incremental parser, synchronous/asynchronous backpressured handlers, content-type validation before body delivery, Last-Event-ID, server retry delay, cancellation, and bounded/unbounded reconnect policy |
+| OpenTelemetry | Complete | SDK-neutral HTTP CLIENT spans, W3C traceparent/tracestate continuation and injection, stable HTTP semantic attributes, retry counts, monotonic durations, sensitive URL defaults, and failure-isolated observer adapter |
 | Cross-platform CI | Complete | Linux, macOS, Windows; Nim 2.2.0 and stable |
 | Cross-container E2E | Complete | Clean Nim/Joubako client container against independent backend and redirect containers; typed JSON, query/header fidelity, binary, gzip, chunked streaming, retry, cross-origin credential stripping, cookies, file upload/download, response limits, NIF/BIF, concurrency, and timeout |
 | Native allocation leak probe | Complete | Valgrind, ARC, `-d:useMalloc`, zero bytes at exit on success and error paths |

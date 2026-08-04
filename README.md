@@ -148,6 +148,8 @@ The current implementation includes:
 - separate connection/header and body-read timeouts;
 - redirect credential stripping and optional host allowlists;
 - FlowBrigade circuit-breaker, rate-limit, and bulkhead guards;
+- OpenTelemetry-compatible HTTP CLIENT spans and W3C trace-context
+  propagation without a mandatory telemetry SDK;
 - URL-encoded forms, multipart bodies, authentication helpers, and progress
   callbacks;
 - pluggable per-request codecs;
@@ -368,6 +370,40 @@ discard api.useResponseInterceptor(
 
 discard api.ejectRequestInterceptor(authInterceptor)
 ```
+
+## OpenTelemetry
+
+`useOpenTelemetry` creates one HTTP CLIENT span for each logical Joubako
+request, including all of its retry attempts. It injects a W3C `traceparent`,
+continues valid parent context, preserves `tracestate`, and reports stable HTTP
+semantic attributes such as `http.request.method`, `url.full`,
+`server.address`, `server.port`, `http.response.status_code`, and `error.type`.
+
+```nim
+api.useOpenTelemetry(proc(span: OpenTelemetrySpan) =
+  telemetryQueue.add span
+)
+
+let outcome = await api.get("/users/42")
+```
+
+The observer is the adapter boundary for an application-selected
+OpenTelemetry SDK or OTLP exporter. Observer failures are isolated from the
+request result. `span.semanticAttributes()` returns typed key/value entries,
+while `attemptCount` and `retryCount` expose Joubako-specific resilience data.
+
+For safety, URL userinfo and fragments are never recorded, and query strings
+are excluded by default. Applications that have reviewed their query data may
+enable them explicitly:
+
+```nim
+var telemetryOptions = defaultOpenTelemetryOptions()
+telemetryOptions.captureQuery = true
+api.useOpenTelemetry(exportSpan, telemetryOptions)
+```
+
+Call `clearOpenTelemetry()` to remove instrumentation and propagation from a
+client.
 
 ## Deadlines, cancellation, and limits
 
