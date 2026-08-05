@@ -290,16 +290,40 @@ Except as contained in this notice, the name of a copyright holder shall not
 be used in advertising or otherwise to promote the sale, use or other dealings
 in this Software without prior written authorization of the copyright holder.
 
+## GraphQL parser dependency
+
+### nim-graphql
+
+- Version: 0.2.30
+- Source: https://github.com/status-im/nim-graphql
+- Copyright: Copyright (c) 2021-2026 Status Research & Development GmbH
+- License: Apache License 2.0 or MIT License, at the user's option
+
+Joubako pins nim-graphql as a Git submodule and imports only its
+executable-document lexer and parser. It does not use nim-graphql's HTTP client
+or server runtime. Joubako elects the Apache License 2.0 terms reproduced
+earlier in this file.
+
 ## Nim package-resolution dependencies
 
-The following packages are transitive dependencies declared by nim-zlib. The
-Joubako compression implementation imports none of their modules directly,
-but they are recorded here because Nimble resolves them as part of the package
-graph.
+The following packages are direct or transitive dependencies resolved by
+Nimble. They are recorded here even when Joubako imports only a narrow part of
+their API.
+
+### faststreams
+
+- Version: 0.5.1
+- Source: https://github.com/status-im/nim-faststreams
+- Copyright: Copyright (c) Status Research & Development GmbH and contributors
+- License: Apache License 2.0
+
+faststreams supplies the bounded in-memory input abstraction used by the
+nim-graphql parser. The Apache License 2.0 terms are reproduced earlier in this
+file.
 
 ### Stew
 
-- Version: 0.4.2
+- Version: 0.5.1
 - Source: https://github.com/status-im/nim-stew
 - Copyright: Status Research & Development GmbH and contributors
 - License: MIT License or Apache License 2.0

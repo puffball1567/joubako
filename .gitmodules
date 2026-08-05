@@ -1,0 +1,3 @@
+[submodule "src/joubako/vendor/nim_graphql"]
+	path = src/joubako/vendor/nim_graphql
+	url = https://github.com/status-im/nim-graphql.git

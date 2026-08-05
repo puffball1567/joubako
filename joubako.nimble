@@ -11,6 +11,7 @@ requires "flowbrigade >= 0.5.0"
 requires "nifkit >= 0.2.0"
 requires "zlib >= 0.2.0"
 requires "libcurl >= 1.0.0"
+requires "faststreams >= 0.5.1"
 
 proc temporary(name: string): string =
   quoteShell(getTempDir() / name)
@@ -38,6 +39,7 @@ task test, "Run the Joubako test suite":
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-sse-nimcache") & " --out:" & temporary("joubako-test-sse") & " tests/test_sse.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-opentelemetry-nimcache") & " --out:" & temporary("joubako-test-opentelemetry") & " tests/test_opentelemetry.nim"
   exec "nim c -r --path:src --nimcache:" & temporary("joubako-httpcache-nimcache") & " --out:" & temporary("joubako-test-httpcache") & " tests/test_httpcache.nim"
+  exec "nim c -r --mm:arc --path:src --nimcache:" & temporary("joubako-graphql-nimcache") & " --out:" & temporary("joubako-test-graphql") & " tests/test_graphql.nim"
   when not defined(windows):
     exec "nim c --mm:arc --path:src --nimcache:" & temporary("joubako-http2-nimcache") & " --out:" & temporary("joubako-test-http2") & " tests/test_http2.nim"
     exec "nim c --mm:arc --nimcache:" & temporary("joubako-http2-runner-nimcache") & " --out:" & temporary("joubako-http2-runner") & " tests/run_http2_test.nim"
@@ -91,3 +93,5 @@ task leak, "Run ARC success and Result-error lifecycle probes under Valgrind":
   exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-httpcache-leak-nimcache") & " --out:" & temporary("joubako-httpcache-leak-probe") & " tests/httpcache_leak_probe.nim"
   exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-httpcache-leak-probe")
   exec "bash tests/http2_leak.sh"
+  exec "nim c -d:release -d:useMalloc --mm:arc --path:src --nimcache:" & temporary("joubako-graphql-leak-nimcache") & " --out:" & temporary("joubako-graphql-leak-probe") & " tests/graphql_leak_probe.nim"
+  exec "valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=definite,indirect,possible --error-exitcode=99 " & temporary("joubako-graphql-leak-probe")
