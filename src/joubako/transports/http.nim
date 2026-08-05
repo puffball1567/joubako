@@ -535,6 +535,7 @@ proc buildResponse(
   return types.Response(
     status: int(raw.code),
     statusText: statusText,
+    httpVersion: "HTTP/1.1",
     headers: responseHeaders,
     body: body,
     request: request

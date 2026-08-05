@@ -8,6 +8,7 @@ const dependencyPaths = [
   "_deps/unittest2",
   "_deps/stew",
   "_deps/zlib",
+  "_deps/libcurl",
 ]
 
 let root = getCurrentDir()
