@@ -48,6 +48,13 @@ jobs:
           ref: v0.4.2
           path: _deps/stew
 
+      - name: Checkout libcurl Nim bindings
+        uses: actions/checkout@v4
+        with:
+          repository: Araq/libcurl
+          ref: 177d7007155096f9091126f81e7dda0032bffe9d
+          path: _deps/libcurl
+
       - name: Checkout results
         uses: actions/checkout@v4
         with:
@@ -75,6 +82,7 @@ jobs:
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
+          nimble develop -y -a:_deps/libcurl
 
       - name: Generate Nim 2.2 dependency paths
         if: matrix.nim-version == '2.2.0'
@@ -146,6 +154,13 @@ jobs:
           ref: v0.4.2
           path: _deps/stew
 
+      - name: Checkout libcurl Nim bindings
+        uses: actions/checkout@v4
+        with:
+          repository: Araq/libcurl
+          ref: 177d7007155096f9091126f81e7dda0032bffe9d
+          path: _deps/libcurl
+
       - name: Checkout results
         uses: actions/checkout@v4
         with:
@@ -173,6 +188,7 @@ jobs:
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
+          nimble develop -y -a:_deps/libcurl
 
       - name: Resolve dependencies
         run: nimble --legacy --offline setup
@@ -244,6 +260,13 @@ jobs:
           ref: v0.4.2
           path: _deps/stew
 
+      - name: Checkout libcurl Nim bindings
+        uses: actions/checkout@v4
+        with:
+          repository: Araq/libcurl
+          ref: 177d7007155096f9091126f81e7dda0032bffe9d
+          path: _deps/libcurl
+
       - name: Checkout results
         uses: actions/checkout@v4
         with:
@@ -271,6 +294,7 @@ jobs:
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
+          nimble develop -y -a:_deps/libcurl
 
       - name: Install Valgrind
         run: |

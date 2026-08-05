@@ -49,7 +49,9 @@ Joubako depends on FlowBrigade 0.5 or newer for generic resilience mechanisms
 such as asynchronous retry, backoff, deadlines, circuit breakers, rate limits,
 and bulkheads. HTTP-specific retry classification remains Joubako's
 responsibility. Joubako builds bounded streaming gzip and deflate decoding on
-nim-zlib 0.2 or newer and its bundled zlib implementation.
+nim-zlib 0.2 or newer and its bundled zlib implementation. The optional
+HTTP/2 transport uses the libcurl Nim bindings and a system libcurl build with
+HTTP/2 support; libcurl commonly delegates framing and HPACK to nghttp2.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
@@ -133,6 +135,8 @@ The current implementation includes:
 
 - awaitable HTTP requests returning `Future[JResult[T]]`;
 - event-loop-local HTTP keep-alive reuse with a bounded idle pool;
+- HTTP/2 multiplexing, connection reuse, bounded streaming, redirects, and
+  cancellation through the optional libcurl transport;
 - bounded streaming gzip and deflate response decoding;
 - bounded Server-Sent Events parsing with backpressure, cancellation,
   reconnection, and Last-Event-ID continuity;
@@ -156,6 +160,33 @@ The current implementation includes:
   callbacks;
 - pluggable per-request codecs;
 - Unix domain socket, WebSocket, and in-process transports.
+
+## HTTP/2
+
+Use `Http2Transport` when the peer is expected to negotiate HTTP/2:
+
+```nim
+let api = newClient(newHttp2Transport(), "https://api.example.com/")
+let outcome = await api.get("health")
+```
+
+The runtime libcurl must include HTTP/2 support; verify it with `curl -V` and
+look for `HTTP2` in the feature list. Joubako rejects a connection that falls
+back to HTTP/1.1 instead of silently changing protocol. Linux distributions
+and macOS package managers normally provide libcurl as a system package. On
+Windows, place an HTTP/2-capable `libcurl.dll` and its runtime dependencies
+beside the application executable or on `PATH`.
+
+Clear-text HTTP/2 uses prior knowledge and is disabled by default. Enable it
+only for a controlled h2c endpoint:
+
+```nim
+let transport = newHttp2Transport(allowH2c = true)
+```
+
+Keep one transport alive and call `await transport.close()` during orderly
+shutdown. A shared transport reuses connections and multiplexes concurrent
+requests over the same HTTP/2 connection.
 
 ## ARC memory model
 

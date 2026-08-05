@@ -86,6 +86,9 @@ type
   Response* = object
     status*: int
     statusText*: string
+    ## Negotiated protocol reported by the transport, for example
+    ## `HTTP/1.1` or `HTTP/2`. Empty when a custom transport does not report it.
+    httpVersion*: string
     headers*: Headers
     body*: string
     request*: Request
@@ -160,6 +163,9 @@ proc add*(headers: var Headers; name, value: string) =
 
 proc set*(headers: var Headers; name, value: string) =
   headers.values[normalizeHeader(name)] = @[value]
+
+proc del*(headers: var Headers; name: string) =
+  headers.values.del(normalizeHeader(name))
 
 func contains*(headers: Headers; name: string): bool =
   normalizeHeader(name) in headers.values
