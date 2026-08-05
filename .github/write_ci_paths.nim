@@ -9,6 +9,7 @@ const dependencyPaths = [
   "_deps/stew",
   "_deps/zlib",
   "_deps/libcurl",
+  "_deps/faststreams",
 ]
 
 let root = getCurrentDir()

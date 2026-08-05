@@ -8,6 +8,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | FlowBrigade resilience | Complete | Async retry, circuit breaker, token-bucket rate limit, bulkhead |
 | HTTP(S) and JSON | Complete | Verified TLS chain and hostname/IP by default, custom CA/mTLS/cipher configuration, HTTP/SOCKS proxy selection with environment and NO_PROXY rules, keep-alive reuse keyed by origin and proxy, bounded idle pool, bounded gzip/deflate decoding, bounded opt-in cookie jar across redirects, streaming limit checks, redirects, typed JSON |
 | Typed query, headers, body APIs | Complete | Configurable JSON policies, synchronous/asynchronous pluggable codecs with response-aware decoding, URL-encoded form, buffered multipart, file-backed streaming multipart, raw bytes-as-string |
+| GraphQL client | Complete | Typed query/mutation/subscription builder, variables, aliases, directives, fragments, raw-document escape hatch, nim-graphql executable syntax validation, standard JSON-over-HTTP envelope, typed partial data and structured errors |
 | Promise-style composition | Complete | Result-aware synchronous/asynchronous `then`, typed `catch`, `finally`, heterogeneous two-operation `all`; callback exceptions, failed callback Futures, and nil callback Futures settle as errors |
 | NIF/BIF through NIFKit | Complete for NIFKit v0.2 | NIF text request API, BIF v5 wire encoding, canonical NIF response decoding, finite per-direction codec limits, structured error code/offset mapping; typed Nim-value serialization awaits a future NIFKit API |
 | Local IPC | Complete on POSIX | Unix domain sockets with a bounded framed protocol |
@@ -18,7 +19,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | Private HTTP cache | Complete | Pluggable store, bounded LRU memory implementation, max-age/Age/Date/Expires freshness, ETag and Last-Modified 304 revalidation, Vary variants, unsafe-method invalidation, and credential-safe defaults |
 | Cross-platform CI | Complete | Linux, macOS, Windows; Nim 2.2.0 and stable |
 | Cross-container E2E | Complete | Clean Nim/Joubako client container against independent backend and redirect containers; typed JSON, query/header fidelity, binary, gzip, chunked streaming, retry, cross-origin credential stripping, cookies, file upload/download, response limits, NIF/BIF, concurrency, and timeout |
-| Native allocation leak probe | Complete | Valgrind, ARC, `-d:useMalloc`, zero bytes at exit on success and error paths |
+| Native allocation leak probe | Complete | Valgrind, ARC, `-d:useMalloc`, zero definite/indirect/possible loss across core, transport, codec, resilience, HTTP/2, and repeated GraphQL success/error paths |
 | Memory model | Complete | Public failures settle into values; project builds and tests with deterministic ARC |
 | Hardening | Complete | Scripted fault transport, deterministic structured-input fuzzing, mixed retry/codec/cookie soak test, and dedicated fault-path Valgrind coverage |
 

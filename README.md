@@ -27,8 +27,9 @@ and in-process calls.
 - **Keep memory behavior predictable.** Joubako is developed with deterministic
   ARC and hammered under Valgrind on success and failure paths.
 - **Use one model everywhere.** Typed JSON, pluggable codecs, NIF/BIF,
-  multipart uploads, WebSockets, Unix-domain IPC, and in-process transports all
-  speak the same request, result, cancellation, and deadline language.
+  typed GraphQL, multipart uploads, WebSockets, Unix-domain IPC, and in-process
+  transports all speak the same request, result, cancellation, and deadline
+  language.
 
 From a single GET to a resilient native service client, Joubako keeps the code
 clear and the network under control.
@@ -52,6 +53,9 @@ responsibility. Joubako builds bounded streaming gzip and deflate decoding on
 nim-zlib 0.2 or newer and its bundled zlib implementation. The optional
 HTTP/2 transport uses the libcurl Nim bindings and a system libcurl build with
 HTTP/2 support; libcurl commonly delegates framing and HPACK to nghttp2.
+GraphQL executable documents are validated with the maintained
+`status-im/nim-graphql` parser; Joubako owns the typed builder, HTTP envelope,
+response decoding, limits, and Result boundary.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
@@ -123,6 +127,13 @@ nimble setup --offline
 nimble test
 ```
 
+Source checkouts must include the pinned GraphQL parser submodule. Clone with
+`git clone --recurse-submodules`, or initialize an existing checkout with:
+
+```sh
+git submodule update --init --recursive
+```
+
 `nimble.develop` and `nimble.paths` contain machine-specific paths and are
 therefore ignored by Git. Published or separately checked-out builds resolve
 the declared FlowBrigade and nim-zlib Nimble dependencies normally.
@@ -143,6 +154,8 @@ The current implementation includes:
 - `then`, `catch`, `finally`, and `all` composition over the same Result-valued
   `Future`;
 - typed JSON encoding and decoding;
+- typed GraphQL query, mutation, subscription, variable, directive, and
+  fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
 - synchronous or asynchronous request/response interceptors;
 - HTTP-aware retry using FlowBrigade backoff, deadlines, asynchronous waiting,
@@ -348,6 +361,69 @@ precedence.
 JSON behavior can be adjusted through `JsonCodecOptions` or a reusable
 `jsonCodec[TBody, TResponse]`. This exposes Nim's extra/missing-key and enum
 encoding policies while retaining the typed helper API.
+
+## GraphQL
+
+Build an executable document from typed values, then send it through the same
+Joubako client, transport policy, limits, cancellation, and ARC-safe Result
+boundary used by every other request:
+
+```nim
+import std/[asyncdispatch, json, options]
+import joubako
+
+type
+  User = object
+    id*: string
+    name*: string
+
+  UserData = object
+    user*: User
+
+proc main() {.async.} =
+  let api = newClient(newHttpTransport(), "https://api.example.com/")
+  let document = gqlQuery(
+    "User",
+    variables = [gqlVariableDefinition("id", "ID!")],
+    selection = [gqlField(
+      "user",
+      arguments = [gqlArgument("id", gqlVariable("id"))],
+      selection = [gqlField("id"), gqlField("name")]
+    )]
+  )
+
+  let outcome = await api.executeGraphql(
+    "graphql", document, UserData, %*{"id": "42"}
+  )
+  if outcome.isErr:
+    echo outcome.error.msg
+  elif outcome.value.hasErrors:
+    echo outcome.value.errors[0].message
+  elif outcome.value.data.isSome:
+    echo outcome.value.data.get.user.name
+
+waitFor main()
+```
+
+Names, type references, values, nesting, fragments, directives, duplicate
+definitions, and the final executable syntax are validated before dispatch.
+Multiple builder operations require a matching `operationName`. GraphQL
+responses preserve partial typed `data`, structured `errors`, error paths and
+locations, and `extensions` together instead of discarding useful partial
+results.
+
+For generated documents or migration code, `gqlSource` accepts a raw GraphQL
+executable document while retaining parser validation and the standard request
+and response envelope:
+
+```nim
+let document = gqlSource("query Health { health }")
+let outcome = await api.executeGraphql("graphql", document, HealthData)
+```
+
+`gokSubscription` and `gqlSubscription` construct subscription operations, but
+`executeGraphql` performs an HTTP request. Long-lived GraphQL subscription
+protocols should use Joubako's WebSocket primitives.
 
 NIFKit v0.2 integration accepts NIF text at the API boundary, transmits BIF v5
 binary data, and decodes successful responses to canonical NIF text:
