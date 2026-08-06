@@ -1,5 +1,5 @@
-import std/[asyncdispatch, monotimes, strutils, times, unittest]
-import joubako/[cookiejar, types]
+import std/[asyncdispatch, monotimes, os, strutils, times, unittest]
+import joubako/[client, cookiejar, multipart, result, types]
 import joubako/transports/http2
 
 const
@@ -62,6 +62,198 @@ suite "HTTP/2 transport":
     check response.body == "POST:" & payload
     check progress.len >= 1
     check progress[^1] == (payload.len.int64, payload.len.int64)
+    waitFor transport.close()
+
+  test "streams mixed file-backed multipart parts with progress":
+    let uploadPath = getTempDir() / "joubako-http2-multipart-upload.txt"
+    writeFile(uploadPath, repeat("file-payload-", 8 * 1024))
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    var progress: seq[(int64, int64)]
+    var opts = options()
+    opts.onUploadProgress = proc(done, total: int64) =
+      progress.add (done, total)
+    var multipartRequest = request(
+      "/multipart", rmPost, requestOptions = opts
+    )
+    multipartRequest.multipartParts = @[
+      MultipartPart(name: "description", body: "from-nim"),
+      MultipartPart(
+        name: "memory-file",
+        filename: "memory.txt",
+        contentType: "text/plain",
+        body: "buffered-data"
+      ),
+      MultipartPart(
+        name: "disk-file",
+        filename: "payload.txt",
+        contentType: "text/plain",
+        filePath: uploadPath
+      )
+    ]
+    multipartRequest.headers.set("content-length", "1")
+    let response = waitFor transport.send(multipartRequest)
+    check response.body.startsWith("multipart/form-data; boundary=")
+    check "name=\"description\"" in response.body
+    check "from-nim" in response.body
+    check "filename=\"memory.txt\"" in response.body
+    check "buffered-data" in response.body
+    check "filename=\"payload.txt\"" in response.body
+    check "joubako-http2-multipart-upload.txt" notin response.body
+    check repeat("file-payload-", 8 * 1024) in response.body
+    check progress.len > 0
+    check progress[^1][0] == progress[^1][1]
+    check progress[^1][0] > getFileSize(uploadPath)
+    waitFor transport.close()
+
+  test "reopens file-backed multipart parts across 307 redirects":
+    let uploadPath = getTempDir() / "joubako-http2-multipart-redirect.txt"
+    writeFile(uploadPath, "redirected-file")
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    var multipartRequest = request("/multipart-redirect", rmPost)
+    multipartRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "redirect.txt",
+        contentType: "text/plain",
+        filePath: uploadPath
+      )
+    ]
+    let response = waitFor transport.send(multipartRequest)
+    check "filename=\"redirect.txt\"" in response.body
+    check "redirected-file" in response.body
+    waitFor transport.close()
+
+  test "public PUT and PATCH helpers stream file-backed parts over HTTP/2":
+    let uploadPath = getTempDir() / "joubako-http2-multipart-method.txt"
+    writeFile(uploadPath, "method-file")
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    let api = newClient(transport, h2Base & "/")
+    let parts = @[
+      formField("field", "value"),
+      formFilePath(
+        "file", uploadPath,
+        filename = "method.txt",
+        contentType = "text/plain"
+      )
+    ]
+    let putOutcome = waitFor api.putMultipart("multipart-method", parts)
+    check putOutcome.isOk
+    if putOutcome.isOk:
+      check putOutcome.value.body.startsWith(
+        "PUT\nmultipart/form-data; boundary="
+      )
+      check "filename=\"method.txt\"" in putOutcome.value.body
+      check "method-file" in putOutcome.value.body
+    let patchOutcome = waitFor api.patchMultipart("multipart-method", parts)
+    check patchOutcome.isOk
+    if patchOutcome.isOk:
+      check patchOutcome.value.body.startsWith(
+        "PATCH\nmultipart/form-data; boundary="
+      )
+      check "filename=\"method.txt\"" in patchOutcome.value.body
+      check "method-file" in patchOutcome.value.body
+    waitFor transport.close()
+
+  test "drops multipart bodies when a 303 redirect changes to GET":
+    let uploadPath = getTempDir() / "joubako-http2-multipart-303.txt"
+    writeFile(uploadPath, "must-not-be-replayed")
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    var multipartRequest = request("/multipart-redirect-get", rmPost)
+    multipartRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "redirect.txt",
+        contentType: "text/plain",
+        filePath: uploadPath
+      )
+    ]
+    let response = waitFor transport.send(multipartRequest)
+    check response.body == "GET:"
+    waitFor transport.close()
+
+  test "rejects missing multipart files and wire sizes before dispatch":
+    let transport = newHttp2Transport(allowH2c = true)
+    var missingRequest = request("/multipart", rmPost)
+    missingRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "missing.txt",
+        contentType: "text/plain",
+        filePath: getTempDir() / "joubako-http2-does-not-exist"
+      )
+    ]
+    check errorKind(transport.send(missingRequest)) == jeStream
+
+    let uploadPath = getTempDir() / "joubako-http2-multipart-limit.txt"
+    writeFile(uploadPath, "12345678")
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    var opts = options()
+    opts.maxRequestBytes = 8
+    var oversizedRequest = request(
+      "/multipart", rmPost, requestOptions = opts
+    )
+    oversizedRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "limit.txt",
+        contentType: "text/plain",
+        filePath: uploadPath
+      )
+    ]
+    check errorKind(transport.send(oversizedRequest)) == jeBodyTooLarge
+
+    var conflictingRequest = request("/multipart", rmPost, "body")
+    conflictingRequest.multipartParts = @[
+      MultipartPart(name: "field", body: "value")
+    ]
+    check errorKind(transport.send(conflictingRequest)) == jeInvalidRequest
+
+    conflictingRequest.body = ""
+    conflictingRequest.headers.set(
+      "content-type", "multipart/form-data; boundary=caller"
+    )
+    check errorKind(transport.send(conflictingRequest)) == jeInvalidRequest
+    waitFor transport.close()
+
+  test "cancels a file-backed multipart upload in progress":
+    let uploadPath = getTempDir() / "joubako-http2-multipart-cancel.txt"
+    writeFile(uploadPath, repeat('x', 512 * 1024))
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    let token = newCancellationToken()
+    var opts = options()
+    opts.cancellation = token
+    opts.onUploadProgress = proc(done, total: int64) =
+      if done > 0:
+        token.cancel("stop multipart upload")
+    var multipartRequest = request(
+      "/slow-upload", rmPost, requestOptions = opts
+    )
+    multipartRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "cancel.txt",
+        contentType: "text/plain",
+        filePath: uploadPath
+      )
+    ]
+    check errorKind(transport.send(multipartRequest)) == jeCancelled
     waitFor transport.close()
 
   test "preserves repeated response headers and status errors as responses":

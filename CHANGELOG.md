@@ -12,6 +12,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - First-class ORC support across the complete test suite, TLS/mTLS/SOCKS5h
   integration, hardening probes, real-network E2E scenarios, and Valgrind leak
   checks while retaining ARC as the default memory manager.
+- Incremental file-backed multipart uploads over HTTP/2, including bounded
+  wire-size validation, progress, cancellation, transmitted filename privacy,
+  and correct replay or body removal across redirects.
 
 ## [0.1.1] - 2026-08-03
 

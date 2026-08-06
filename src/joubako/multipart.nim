@@ -43,7 +43,7 @@ proc multipartBoundary*(): string =
   "joubako-" & encode(random).replace("+", "-").replace("/", "_").replace("=", "")
 
 proc validateDispositionValue(value, label: string) =
-  if value.len == 0 or value.contains({'\r', '\n', '"'}):
+  if value.len == 0 or value.contains({'\0', '\r', '\n', '"'}):
     raise newJoubakoError(
       jeInvalidRequest, "invalid multipart " & label
     )
@@ -67,7 +67,7 @@ proc encodeMultipart*(
       result.add "; filename=\"" & part.filename & "\""
     result.add "\r\n"
     if part.contentType.len > 0:
-      if part.contentType.contains({'\r', '\n'}):
+      if part.contentType.contains({'\0', '\r', '\n'}):
         raise newJoubakoError(
           jeInvalidRequest, "invalid multipart content type"
         )
