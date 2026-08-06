@@ -8,12 +8,12 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | FlowBrigade resilience | Complete | Async retry, circuit breaker, token-bucket rate limit, bulkhead |
 | HTTP(S) and JSON | Complete | Verified TLS chain and hostname/IP by default, custom CA/mTLS/cipher configuration, HTTP/SOCKS proxy selection with environment and NO_PROXY rules, keep-alive reuse keyed by origin and proxy, bounded idle pool, bounded gzip/deflate decoding, bounded opt-in cookie jar across redirects, streaming limit checks, redirects, typed JSON |
 | Typed query, headers, body APIs | Complete | Configurable JSON policies, synchronous/asynchronous pluggable codecs with response-aware decoding, URL-encoded form, buffered multipart, file-backed streaming multipart over HTTP/1.1 and HTTP/2, raw bytes-as-string |
-| GraphQL client | Complete | Typed query/mutation/subscription builder, variables, aliases, directives, fragments, raw-document escape hatch, nim-graphql executable syntax validation, standard JSON-over-HTTP envelope, typed partial data and structured errors |
+| GraphQL client | Complete | Typed query/mutation/subscription builder, variables, aliases, directives, fragments, raw-document escape hatch, nim-graphql executable syntax validation, standard JSON-over-HTTP envelope, and long-lived `graphql-transport-ws` subscriptions with typed partial data and structured errors |
 | Promise-style composition | Complete | Result-aware synchronous/asynchronous `then`, typed `catch`, `finally`, heterogeneous two-operation `all`; callback exceptions, failed callback Futures, and nil callback Futures settle as errors |
 | NIF/BIF through NIFKit | Complete for NIFKit v0.2 | NIF text request API, BIF v5 wire encoding, canonical NIF response decoding, finite per-direction codec limits, structured error code/offset mapping; typed Nim-value serialization awaits a future NIFKit API |
 | Local IPC | Complete on POSIX | Unix domain sockets with a bounded framed protocol |
 | In-process transport | Complete | Deterministic handler transport |
-| WebSocket | Complete | One-shot transport plus long-lived connection primitives |
+| WebSocket | Complete | One-shot transport, long-lived connection primitives, explicit and verified subprotocol negotiation |
 | Server-Sent Events | Complete | Bounded incremental parser, synchronous/asynchronous backpressured handlers, content-type validation before body delivery, Last-Event-ID, server retry delay, cancellation, and bounded/unbounded reconnect policy |
 | OpenTelemetry | Complete | SDK-neutral HTTP CLIENT spans, W3C traceparent/tracestate continuation and injection, stable HTTP semantic attributes, retry counts, monotonic durations, sensitive URL defaults, and failure-isolated observer adapter |
 | Private HTTP cache | Complete | Pluggable store, bounded LRU memory implementation, max-age/Age/Date/Expires freshness, ETag and Last-Modified 304 revalidation, Vary variants, unsafe-method invalidation, and credential-safe defaults |
@@ -35,6 +35,9 @@ This file maps the delivery order in `vision.md` to the current implementation.
 - Cross-origin redirects remove credentials.
 - Exact and explicit wildcard host allowlists are supported.
 - WebSocket upgrade acceptance and server frame masking rules are validated.
+- GraphQL WebSocket subscriptions require the negotiated
+  `graphql-transport-ws` subprotocol, bound handshake/ack/message sizes, and
+  abort pending reads on cancellation or protocol failure.
 
 ## Upstream runtime constraint
 

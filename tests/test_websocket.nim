@@ -437,6 +437,24 @@ suite "WebSocket transport":
     except JoubakoError as error:
       check error.kind == jeInvalidRequest
 
+  test "direct connection requires the explicit subprotocol argument":
+    var headers = initHeaders()
+    headers.set("sec-websocket-protocol", "graphql-transport-ws")
+    try:
+      discard waitFor connectWebSocket("ws://example.test/", headers)
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
+
+  test "direct connection rejects malformed subprotocol tokens":
+    try:
+      discard waitFor connectWebSocket(
+        "ws://example.test/", subprotocol = "one, two"
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
+
   test "invalid WebSocket ports are structured input errors":
     for url in ["ws://example.test:0/", "ws://example.test:70000/"]:
       try:

@@ -431,9 +431,55 @@ let document = gqlSource("query Health { health }")
 let outcome = await api.executeGraphql("graphql", document, HealthData)
 ```
 
-`gokSubscription` and `gqlSubscription` construct subscription operations, but
-`executeGraphql` performs an HTTP request. Long-lived GraphQL subscription
-protocols should use Joubako's WebSocket primitives.
+Long-lived operations use the modern `graphql-transport-ws` protocol directly.
+Joubako verifies WebSocket subprotocol negotiation, waits for
+`connection_ack`, answers application-level `ping` messages, bounds every
+protocol message, and turns `next`, `error`, and `complete` into the same typed
+GraphQL response model used by HTTP:
+
+```nim
+let document = gqlSubscription(
+  "Notifications",
+  selection = [gqlField(
+    "notification",
+    selection = [gqlField("id"), gqlField("message")]
+  )]
+)
+
+var subscriptionOptions = defaultGraphqlSubscriptionOptions()
+subscriptionOptions.cancellation = newCancellationToken()
+
+let opened = await openGraphqlSubscription(
+  "wss://api.example.com/graphql",
+  document,
+  NotificationData,
+  connectionParams = %*{"accessToken": accessToken},
+  options = subscriptionOptions
+)
+
+if opened.isErr:
+  echo opened.error.msg
+else:
+  let subscription = opened.value
+  while true:
+    let event = await subscription.next()
+    if event.isErr:
+      echo event.error.msg
+      break
+    if event.value.isNone:
+      break
+    if event.value.get.hasErrors:
+      echo event.value.get.errors[0].message
+    elif event.value.get.data.isSome:
+      echo event.value.get.data.get.notification.message
+  discard await subscription.close()
+```
+
+HTTP upgrade headers and `connectionParams` are separate authentication
+channels. Cancellation immediately closes an active receive and consumes its
+pending Future. One `GraphqlSubscription` owns one WebSocket connection and
+one operation, making completion and resource ownership explicit; callers can
+open independent subscriptions concurrently with `allFutures` when needed.
 
 NIFKit v0.2 integration accepts NIF text at the API boundary, transmits BIF v5
 binary data, and decodes successful responses to canonical NIF text:
@@ -867,8 +913,10 @@ if reply.isErr:
   echo reply.error.msg
 ```
 
-For a long-lived connection, use `connectWebSocket`, `sendText`,
-`receiveMessage`, and `close` directly.
+For a non-GraphQL long-lived connection, use `connectWebSocket`, `sendText`,
+`receiveMessage`, and `close` directly. `connectWebSocket` also accepts an
+explicit `subprotocol` and rejects a successful upgrade unless the server
+selects it.
 
 ## Test
 
