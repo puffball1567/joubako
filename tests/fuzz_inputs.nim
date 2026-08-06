@@ -29,6 +29,27 @@ proc fuzzCompression(payload: string): Future[void] {.async.} =
     else:
       doAssert decoded.error.kind in {jeCompression, jeBodyTooLarge}
 
+proc fuzzJsonStreams(payload: string) =
+  for format in [jsfNdjson, jsfJsonSequence]:
+    var options = defaultJsonStreamParserOptions()
+    options.maxRecordBytes = 128
+    options.skipInvalidRecords = (payload.len mod 2) == 0
+    options.allowUnterminatedNdjsonRecord = (payload.len mod 3) == 0
+    let parser = newJsonStreamParser(format, options)
+    var offset = 0
+    var failed = false
+    while offset < payload.len and not failed:
+      let size = min(payload.len - offset, max(1, rand(16)))
+      let parsed = parser.feed(payload[offset ..< offset + size])
+      if parsed.isErr:
+        doAssert parsed.error.kind in {jeCodec, jeBodyTooLarge}
+        failed = true
+      offset += size
+    if not failed:
+      let finished = parser.finish()
+      if finished.isErr:
+        doAssert finished.error.kind in {jeCodec, jeBodyTooLarge}
+
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)
   let iterations = getEnv("JOUBAKO_FUZZ_ITERATIONS", "10000").parseInt
@@ -51,6 +72,7 @@ proc main(): Future[void] {.async.} =
     discard withQuery("/fuzz#fragment", [
       (name: payload, value: randomBytes(64))
     ])
+    fuzzJsonStreams(payload)
     if index mod 10 == 0:
       await fuzzCompression(payload)
 

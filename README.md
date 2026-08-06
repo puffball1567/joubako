@@ -164,6 +164,7 @@ The current implementation includes:
 - typed JSON encoding and decoding;
 - JSON-RPC 2.0 calls, notifications, and mixed batches over HTTP, plus
   response-bearing calls and batches over one-shot WebSocket;
+- typed, backpressured NDJSON and RFC 7464 JSON Text Sequence streaming;
 - typed GraphQL query, mutation, subscription, variable, directive, and
   fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
@@ -416,6 +417,42 @@ by constructing the client with `newWebSocketTransport()`. Long-lived,
 multiplexed JSON-RPC sessions are intentionally not implied by this helper.
 Request `maxResponseBytes`, cancellation, deadlines, host allowlists, retries,
 and other Joubako policies continue to apply at the transport layer.
+
+## NDJSON and JSON Text Sequences
+
+Process large or unbounded JSON responses one typed record at a time without
+retaining the complete response body:
+
+```nim
+type Event = object
+  id: int
+  message: string
+
+let streamed = await api.getNdjsonAsync(
+  "events",
+  Event,
+  proc(event: Event): Future[void] {.async.} =
+    await persist(event)       # backpressure pauses the next network read
+)
+```
+
+Use `getNdjsonAsync` and `getJsonSequenceAsync` for asynchronous handlers, or
+the variants without `Async` for synchronous handlers. `postNdjson` and
+`postJsonSequence` encode a sequence request and stream the sequence response;
+asynchronous handler variants are available with the `Async` suffix.
+
+The incremental parsers handle records split across arbitrary transport
+chunks, enforce a per-record byte limit before unbounded accumulation, require
+UTF-8, and fail closed on malformed records. NDJSON accepts LF and CRLF and
+ignores empty lines by default; both choices are configurable. Its required
+final LF is strict by default. JSON Text Sequences use the RFC 7464 RS/JSON/LF
+wire format and detect possibly truncated top-level numbers. Malformed-record
+recovery is available only through the explicit `skipInvalidRecords` option.
+
+NDJSON uses `application/x-ndjson`; the registered JSON Text Sequence media
+type is `application/json-seq`. See the
+[NDJSON 1.0 specification](https://github.com/ndjson/ndjson-spec) and
+[RFC 7464](https://www.rfc-editor.org/rfc/rfc7464.html).
 
 ## GraphQL
 
