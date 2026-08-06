@@ -3,5 +3,5 @@ when withDir(thisDir(), system.fileExists("nimble.paths")):
   include "nimble.paths"
 # end Nimble config
 
-# Joubako is developed and tested with deterministic ARC memory management.
+# ARC is the local default; CI and dedicated Nimble tasks also test ORC.
 switch("mm", "arc")

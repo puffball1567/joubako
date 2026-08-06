@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- First-class ORC support across the complete test suite, TLS/mTLS/SOCKS5h
+  integration, hardening probes, real-network E2E scenarios, and Valgrind leak
+  checks while retaining ARC as the default memory manager.
+
 ## [0.1.1] - 2026-08-03
 
 ### Added

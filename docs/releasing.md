@@ -10,7 +10,8 @@ checkout with no tracked changes and with the release dependencies available.
 3. Move the matching section in `CHANGELOG.md` from `Unreleased` to the release
    date in `YYYY-MM-DD` form.
 4. Confirm direct dependency minimums and their licenses:
-   FlowBrigade, NIFKit, and nim-zlib.
+   FlowBrigade, NIFKit, nim-zlib, libcurl, faststreams, and the vendored
+   nim-graphql parser.
 5. Confirm `nimble.paths`, `nimble.develop`, build products, credentials, keys,
    and machine-specific paths are not tracked. The certificates under
    `tests/testdata/tls` are test-only fixtures and must never be used outside
@@ -18,18 +19,26 @@ checkout with no tracked changes and with the release dependencies available.
 
 ## Verify
 
-Use Nim 2.2 or newer with ARC. Local sibling checkouts may be registered with
-`nimble develop`; CI checks out exact dependency releases independently.
+Use Nim 2.2 or newer and verify both ARC and ORC. Local sibling checkouts may
+be registered with `nimble develop`; CI checks out exact dependency releases
+independently.
 
 ```sh
 nimble check
 nim check --mm:arc --path:src src/joubako.nim
+nim check --mm:orc --path:src src/joubako.nim
 nim c --mm:arc --path:src examples/basic.nim
+nim c --mm:orc --path:src examples/basic.nim
 nimble test
+nimble testOrc
 nimble testSsl
+nimble testSslOrc
 nimble fuzz
+nimble fuzzOrc
 nimble soak
+nimble soakOrc
 nimble e2e
+nimble e2eOrc
 nimble benchmark
 ```
 
@@ -37,11 +46,13 @@ On Linux with Valgrind installed:
 
 ```sh
 nimble leak
+nimble leakOrc
 ```
 
 Push the release branch and require all GitHub Actions jobs to pass. The matrix
 must cover Linux, macOS, and Windows with the oldest supported Nim release and
-the current stable release. The Linux SSL and Valgrind jobs must also pass.
+the current stable release. Both ARC and ORC variants of the Linux SSL, Docker
+E2E, and Valgrind jobs must also pass.
 
 ## Release
 

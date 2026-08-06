@@ -7,13 +7,14 @@ on:
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Nim ${{ matrix.nim-version }}
+    name: ${{ matrix.os }} / Nim ${{ matrix.nim-version }} / ${{ matrix.memory-manager }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         nim-version: ["2.2.0", stable]
+        memory-manager: [arc, orc]
 
     steps:
       - name: Checkout Joubako
@@ -103,28 +104,46 @@ jobs:
       - name: Check public entry point
         if: matrix.nim-version == 'stable'
         run: |
-          nim check --mm:arc --path:src src/joubako.nim
-          nim check --mm:arc --path:src examples/basic.nim
-          nim check --mm:arc --path:src examples/frameworks/client.nim
-          nim check --mm:arc --path:src benchmarks/core_bench.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src src/joubako.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src examples/basic.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/core_bench.nim
 
-      - name: Run tests with Nim 2.2 Nimble
-        if: matrix.nim-version == '2.2.0'
+      - name: Run ARC tests with Nim 2.2 Nimble
+        if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'arc'
         run: nimble --offline test
 
-      - name: Run tests with stable Nimble
-        if: matrix.nim-version == 'stable'
+      - name: Run ORC tests with Nim 2.2 Nimble
+        if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'orc'
+        run: nimble --offline testOrc
+
+      - name: Run ARC tests with stable Nimble
+        if: matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         run: nimble --legacy --offline test
 
-      - name: Run hardening fuzz and soak probes
-        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable'
+      - name: Run ORC tests with stable Nimble
+        if: matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        run: nimble --legacy --offline testOrc
+
+      - name: Run ARC hardening fuzz and soak probes
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         run: |
           nimble --legacy --offline fuzz
           nimble --legacy --offline soak
 
+      - name: Run ORC hardening fuzz and soak probes
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        run: |
+          nimble --legacy --offline fuzzOrc
+          nimble --legacy --offline soakOrc
+
   ssl:
-    name: Linux SSL build
+    name: Linux SSL build / ${{ matrix.memory-manager }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        memory-manager: [arc, orc]
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
@@ -207,18 +226,31 @@ jobs:
       - name: Generate pinned dependency paths
         run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
 
-      - name: Build and test with SSL
+      - name: Build and test public SSL surfaces
         run: |
-          nim c -d:ssl --mm:arc --path:src src/joubako.nim
-          nim c -d:ssl --mm:arc --path:src examples/frameworks/client.nim
-          nim c -r -d:ssl --mm:arc --path:src tests/test_tls_options.nim
-          nim c -r -d:ssl --mm:arc --path:src tests/test_http.nim
-          nimble --legacy --offline testSsl
+          nim c -d:ssl --mm:${{ matrix.memory-manager }} --path:src src/joubako.nim
+          nim c -d:ssl --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
+          nim c -r -d:ssl --mm:${{ matrix.memory-manager }} --path:src tests/test_tls_options.nim
+          nim c -r -d:ssl --mm:${{ matrix.memory-manager }} --path:src tests/test_http.nim
+
+      - name: Run ARC secure transport integration tests
+        if: matrix.memory-manager == 'arc'
+        run: nimble --legacy --offline testSsl
+
+      - name: Run ORC secure transport integration tests
+        if: matrix.memory-manager == 'orc'
+        run: nimble --legacy --offline testSslOrc
 
   docker-e2e:
-    name: Linux Docker E2E
+    name: Linux Docker E2E / ${{ matrix.memory-manager }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        memory-manager: [arc, orc]
+    env:
+      JOUBAKO_MEMORY_MANAGER: ${{ matrix.memory-manager }}
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
@@ -241,8 +273,12 @@ jobs:
         run: docker compose -f tests/e2e/compose.yml down --volumes --remove-orphans
 
   valgrind:
-    name: Linux Valgrind leak probe
+    name: Linux Valgrind leak probe / ${{ matrix.memory-manager }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        memory-manager: [arc, orc]
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
@@ -330,5 +366,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y valgrind
 
-      - name: Run ARC success-path lifecycle leak probe
+      - name: Run ARC lifecycle leak probes
+        if: matrix.memory-manager == 'arc'
         run: nimble --legacy --offline leak
+
+      - name: Run ORC lifecycle leak probes
+        if: matrix.memory-manager == 'orc'
+        run: nimble --legacy --offline leakOrc
