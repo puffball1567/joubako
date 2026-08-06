@@ -11,6 +11,11 @@ server.on("stream", (stream, headers) => {
   const path = headers[":path"];
   const chunks = [];
 
+  if (path === "/slow-upload") {
+    stream.pause();
+    setTimeout(() => stream.resume(), 120);
+  }
+
   stream.on("data", chunk => chunks.push(chunk));
   stream.on("end", () => {
     const requestBody = Buffer.concat(chunks).toString();
@@ -58,6 +63,16 @@ server.on("stream", (stream, headers) => {
       stream.end();
       return;
     }
+    if (path === "/multipart-redirect") {
+      stream.respond({ ":status": 307, location: "/multipart" });
+      stream.end();
+      return;
+    }
+    if (path === "/multipart-redirect-get") {
+      stream.respond({ ":status": 303, location: "/echo" });
+      stream.end();
+      return;
+    }
     if (path === "/set-cookie") {
       stream.respond({
         ":status": 302,
@@ -67,7 +82,13 @@ server.on("stream", (stream, headers) => {
       stream.end();
       return;
     }
-    const body = path === "/echo" ? `${method}:${requestBody}` : "ok";
+    const body = path === "/echo"
+      ? `${method}:${requestBody}`
+      : path === "/multipart"
+        ? `${headers["content-type"]}\n${requestBody}`
+        : path === "/multipart-method"
+          ? `${method}\n${headers["content-type"]}\n${requestBody}`
+        : "ok";
     stream.respond({
       ":status": 200,
       "content-type": "text/plain",

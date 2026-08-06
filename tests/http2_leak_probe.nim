@@ -1,8 +1,13 @@
-import std/asyncdispatch
+import std/[asyncdispatch, os, strutils]
 import joubako/[result, types]
 import joubako/transports/http2
 
 proc main() {.async.} =
+  let uploadPath = getTempDir() / "joubako-http2-leak-upload.txt"
+  writeFile(uploadPath, repeat("multipart-probe-", 256))
+  defer:
+    if fileExists(uploadPath):
+      removeFile(uploadPath)
   let transport = newHttp2Transport(allowH2c = true)
   var options = defaultRequestOptions()
   options.timeoutMs = -1
@@ -20,6 +25,24 @@ proc main() {.async.} =
     doAssert response.body == "ok"
 
   for _ in 0 ..< 25:
+    let multipart = await transport.send(Request(
+      httpMethod: rmPost,
+      url: "http://127.0.0.1:18943/multipart-redirect",
+      headers: initHeaders(),
+      multipartParts: @[
+        MultipartPart(name: "field", body: "value"),
+        MultipartPart(
+          name: "file",
+          filename: "probe.txt",
+          contentType: "text/plain",
+          filePath: uploadPath
+        )
+      ],
+      options: options
+    ))
+    doAssert "filename=\"probe.txt\"" in multipart.body
+    doAssert "multipart-probe-" in multipart.body
+
     var bounded = options
     bounded.maxResponseBytes = 1024
     let boundedOutcome = await settle(fallible(transport.send(Request(

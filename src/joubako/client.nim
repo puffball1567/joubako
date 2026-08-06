@@ -311,15 +311,15 @@ proc requestResult(
       ))
     for part in request.multipartParts:
       if part.name.len == 0 or
-          part.name.contains({'\r', '\n', '"'}):
+          part.name.contains({'\0', '\r', '\n', '"'}):
         return err[Response](newJoubakoError(
           jeInvalidRequest, "invalid multipart field name", request.url
         ))
-      if part.filename.contains({'\r', '\n', '"'}):
+      if part.filename.contains({'\0', '\r', '\n', '"'}):
         return err[Response](newJoubakoError(
           jeInvalidRequest, "invalid multipart filename", request.url
         ))
-      if part.contentType.contains({'\r', '\n'}):
+      if part.contentType.contains({'\0', '\r', '\n'}):
         return err[Response](newJoubakoError(
           jeInvalidRequest, "invalid multipart content type", request.url
         ))

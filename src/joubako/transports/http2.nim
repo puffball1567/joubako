@@ -4,7 +4,7 @@
 ## ordering. libcurl owns TLS, HTTP/2 framing, HPACK, connection reuse, and
 ## multiplexing (normally through nghttp2).
 
-import std/[asyncdispatch, monotimes, sequtils, strutils, tables, times, uri]
+import std/[asyncdispatch, monotimes, os, sequtils, strutils, tables, times, uri]
 import libcurl
 import ../[chunkconsumer, compression, cookiejar, result, transport, types]
 
@@ -25,6 +25,7 @@ const
   CurlOptPipeWait = 237
   CurlOptXferInfoFunction = 20_219
   CurlOptXferInfoData = 10_057
+  CurlOptMimePost = 10_269
   CurlMultiOptPipelining = 3
   CurlMultiOptMaxHostConnections = 7
   CurlPipeMultiplex = 2.clong
@@ -42,6 +43,22 @@ proc rawMultiSetopt(handle: PM; option: cint): Mcode {.
   cdecl, varargs, dynlib: CurlLibrary, importc: "curl_multi_setopt".}
 proc rawEasyStrerror(code: cint): cstring {.
   cdecl, dynlib: CurlLibrary, importc: "curl_easy_strerror".}
+proc rawMimeInit(handle: PCurl): pointer {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_init".}
+proc rawMimeFree(mime: pointer) {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_free".}
+proc rawMimeAddPart(mime: pointer): pointer {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_addpart".}
+proc rawMimeName(part: pointer; name: cstring): Code {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_name".}
+proc rawMimeFilename(part: pointer; filename: cstring): Code {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_filename".}
+proc rawMimeType(part: pointer; contentType: cstring): Code {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_type".}
+proc rawMimeData(part: pointer; data: cstring; size: clonglong): Code {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_data".}
+proc rawMimeFileData(part: pointer; filePath: cstring): Code {.
+  cdecl, dynlib: CurlLibrary, importc: "curl_mime_filedata".}
 
 type
   CurlOutcome = object
@@ -54,6 +71,7 @@ type
     request: Request
     done: Future[CurlOutcome]
     headerList: Pslist
+    mime: pointer
     errorBuffer: string
     responseHeaders: Headers
     status: int
@@ -380,6 +398,9 @@ proc cleanupTransfer(state: CurlTransfer) =
     state.transport.transfers.del(cast[uint](state.easy))
     easy_cleanup(state.easy)
     state.easy = nil
+  if state.mime != nil:
+    rawMimeFree(state.mime)
+    state.mime = nil
   if state.headerList != nil:
     slist_free_all(state.headerList)
     state.headerList = nil
@@ -585,6 +606,159 @@ proc checkedSetopt(
       state.request.url
     )
 
+proc addMultipartSize(total: var int64; amount: int64; request: Request) =
+  if amount < 0 or total > high(int64) - amount:
+    raise newJoubakoError(
+      jeBodyTooLarge, "HTTP/2 multipart request size overflow", request.url
+    )
+  total += amount
+  if request.options.maxRequestBytes >= 0 and
+      total > request.options.maxRequestBytes.int64:
+    raise newJoubakoError(
+      jeBodyTooLarge,
+      "HTTP/2 multipart request exceeded the configured limit",
+      request.url
+    )
+
+proc multipartWireSizeUpperBound(request: Request): int64 =
+  ## libcurl generates the MIME boundary. RFC 2046 limits interoperable
+  ## boundaries to 70 characters, so using that maximum gives a conservative
+  ## pre-dispatch bound without opening or buffering the file contents.
+  const boundaryLength = 70
+  if request.body.len > 0:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "HTTP/2 multipart requests cannot also contain a buffered body",
+      request.url
+    )
+  if request.headers.contains("content-type"):
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "HTTP/2 multipart content type and boundary are generated automatically",
+      request.url
+    )
+  for part in request.multipartParts:
+    if part.name.len == 0 or part.name.contains({'\0', '\r', '\n', '"'}):
+      raise newJoubakoError(
+        jeInvalidRequest, "invalid HTTP/2 multipart field name", request.url
+      )
+    if part.filename.contains({'\0', '\r', '\n', '"'}):
+      raise newJoubakoError(
+        jeInvalidRequest, "invalid HTTP/2 multipart filename", request.url
+      )
+    if part.contentType.contains({'\0', '\r', '\n'}):
+      raise newJoubakoError(
+        jeInvalidRequest,
+        "invalid HTTP/2 multipart content type",
+        request.url
+      )
+    if part.filePath.len > 0 and part.filename.len == 0:
+      raise newJoubakoError(
+        jeInvalidRequest,
+        "HTTP/2 file-backed multipart part has no transmitted filename",
+        request.url
+      )
+    if part.filePath.len > 0 and part.body.len > 0:
+      raise newJoubakoError(
+        jeInvalidRequest,
+        "HTTP/2 file-backed multipart part cannot also contain buffered data",
+        request.url
+      )
+    result.addMultipartSize(int64(2 + boundaryLength + 2), request)
+    result.addMultipartSize(int64(
+      "Content-Disposition: form-data; name=\"\"".len + part.name.len
+    ), request)
+    if part.filename.len > 0:
+      result.addMultipartSize(int64(
+        "; filename=\"\"".len + part.filename.len
+      ), request)
+    if part.contentType.len > 0:
+      result.addMultipartSize(int64(
+        "\r\nContent-Type: \r\n".len + part.contentType.len
+      ), request)
+    elif part.filename.len > 0:
+      # libcurl may infer a type from the transmitted filename. Reserve more
+      # than its built-in MIME strings so the preflight result remains an
+      # upper bound even when no explicit type was supplied.
+      result.addMultipartSize(256, request)
+    else:
+      result.addMultipartSize(2, request)
+    result.addMultipartSize(2, request)
+    let contentSize =
+      if part.filePath.len > 0:
+        if not fileExists(part.filePath):
+          raise newJoubakoError(
+            jeStream,
+            "HTTP/2 multipart file does not exist or is not a regular file",
+            request.url
+          )
+        try:
+          getFileSize(part.filePath)
+        except CatchableError as error:
+          raise error.asJoubakoError(jeStream, request.url)
+      else:
+        int64(part.body.len)
+    result.addMultipartSize(contentSize, request)
+    result.addMultipartSize(2, request)
+  result.addMultipartSize(int64(2 + boundaryLength + 4), request)
+
+proc checkedMime(code: Code; request: Request; action: string) =
+  if code != E_OK:
+    raise newJoubakoError(
+      jeTransport,
+      "failed to configure HTTP/2 multipart " & action & ": " &
+        $easy_strerror(code),
+      request.url
+    )
+
+proc configureMultipart(state: CurlTransfer) =
+  if state.request.multipartParts.len == 0:
+    return
+  discard state.request.multipartWireSizeUpperBound()
+  state.mime = rawMimeInit(state.easy)
+  if state.mime == nil:
+    raise newJoubakoError(
+      jeTransport,
+      "failed to allocate HTTP/2 multipart request",
+      state.request.url
+    )
+  for item in state.request.multipartParts:
+    let part = rawMimeAddPart(state.mime)
+    if part == nil:
+      raise newJoubakoError(
+        jeTransport,
+        "failed to allocate HTTP/2 multipart part",
+        state.request.url
+      )
+    checkedMime(rawMimeName(part, item.name.cstring), state.request, "name")
+    if item.filePath.len > 0:
+      checkedMime(
+        rawMimeFileData(part, item.filePath.cstring),
+        state.request,
+        "file"
+      )
+    else:
+      checkedMime(
+        rawMimeData(part, item.body.cstring, item.body.len.clonglong),
+        state.request,
+        "data"
+      )
+    # curl_mime_filedata derives a filename from the path. Apply the public
+    # transmitted filename afterwards so local paths never affect the wire.
+    if item.filename.len > 0:
+      checkedMime(
+        rawMimeFilename(part, item.filename.cstring),
+        state.request,
+        "filename"
+      )
+    if item.contentType.len > 0:
+      checkedMime(
+        rawMimeType(part, item.contentType.cstring),
+        state.request,
+        "content type"
+      )
+  state.checkedSetopt(CurlOptMimePost, state.mime)
+
 proc configureTransfer(state: CurlTransfer; url: Uri) =
   state.checkedSetopt(cint(OPT_URL), state.request.url.cstring)
   state.checkedSetopt(cint(OPT_CUSTOMREQUEST), ($state.request.httpMethod).cstring)
@@ -612,7 +786,9 @@ proc configureTransfer(state: CurlTransfer; url: Uri) =
     )
   if state.request.httpMethod == rmHead:
     state.checkedSetopt(cint(OPT_NOBODY), 1.clong)
-  if state.request.body.len > 0:
+  if state.request.multipartParts.len > 0:
+    state.configureMultipart()
+  elif state.request.body.len > 0:
     state.checkedSetopt(
       cint(OPT_POSTFIELDS), state.request.body[0].unsafeAddr
     )
@@ -624,6 +800,8 @@ proc configureTransfer(state: CurlTransfer; url: Uri) =
   for name, value in state.request.headers.pairs:
     let normalized = name.toLowerAscii
     if normalized.forbiddenHttp2Header:
+      continue
+    if state.request.multipartParts.len > 0 and normalized == "content-length":
       continue
     if normalized == "te" and value.strip.toLowerAscii != "trailers":
       continue
@@ -652,12 +830,6 @@ proc exchange(
     request: Request;
     url: Uri
 ): Future[CurlOutcome] {.async.} =
-  if request.multipartParts.len > 0:
-    raise newJoubakoError(
-      jeInvalidRequest,
-      "file-backed multipart is not supported by the HTTP/2 transport yet",
-      request.url
-    )
   if transport.closed or transport.multi == nil:
     raise newJoubakoError(
       jeTransport, "HTTP/2 transport is closed", request.url
@@ -712,6 +884,7 @@ proc redirectingExchange(
     var currentUrl = parseUri(request.url)
     var currentMethod = request.httpMethod
     var currentBody = request.body
+    var currentMultipartParts = request.multipartParts
     var currentHeaders = request.headers
     let startedAt = getMonoTime()
 
@@ -721,6 +894,7 @@ proc redirectingExchange(
       hop.url = $currentUrl
       hop.httpMethod = currentMethod
       hop.body = currentBody
+      hop.multipartParts = currentMultipartParts
       hop.headers = currentHeaders
       if request.options.timeoutMs >= 0:
         hop.options.timeoutMs = max(
@@ -770,6 +944,7 @@ proc redirectingExchange(
           currentMethod notin {rmGet, rmHead}:
         currentMethod = rmGet
         currentBody = ""
+        currentMultipartParts.setLen(0)
         currentHeaders.del("content-length")
         currentHeaders.del("content-type")
       currentUrl = nextUrl

@@ -412,6 +412,18 @@ suite "Multipart bodies":
         formFile("file", "safe.bin", "x", "text/plain\r\nX-Bad: yes")
       ], "boundary")
 
+  test "NUL bytes in multipart metadata are rejected":
+    expect JoubakoError:
+      discard encodeMultipart([formField("bad\0name", "x")], "boundary")
+    expect JoubakoError:
+      discard encodeMultipart([
+        formFile("file", "bad\0name.bin", "x")
+      ], "boundary")
+    expect JoubakoError:
+      discard encodeMultipart([
+        formFile("file", "safe.bin", "x", "text/plain\0hidden")
+      ], "boundary")
+
   test "invalid boundaries are rejected":
     expect JoubakoError:
       discard encodeMultipart([formField("a", "b")], "bad\r\nboundary")
