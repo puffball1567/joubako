@@ -11,6 +11,7 @@ type
   WebSocket* = ref object
     socket: AsyncSocket
     url*: string
+    subprotocol*: string
     closed*: bool
 
   WebSocketTransport* = ref object of Transport
@@ -44,11 +45,22 @@ func headerValue(headers, name: string): string =
     if separator > 0 and line[0 ..< separator].strip.toLowerAscii == wanted:
       return line[separator + 1 .. ^1].strip
 
+func isWebSocketToken(value: string): bool =
+  if value.len == 0:
+    return false
+  for character in value:
+    if character < '!' or character > '~' or
+        character in {'(', ')', '<', '>', '@', ',', ';', ':', '\\', '"',
+          '/', '[', ']', '?', '=', '{', '}'}:
+      return false
+  true
+
 proc connectWebSocket*(
     url: string;
     headers = initHeaders();
     timeoutMs = 30_000;
-    cancellation: CancellationToken = nil
+    cancellation: CancellationToken = nil;
+    subprotocol = ""
 ): Future[WebSocket] {.async.} =
   let started = getMonoTime()
   proc remainingMs(): int =
@@ -58,6 +70,16 @@ proc connectWebSocket*(
   if url.contains({'\r', '\n'}):
     raise newJoubakoError(
       jeInvalidRequest, "WebSocket URL contains a line break", url
+    )
+  if subprotocol.len > 0 and not subprotocol.isWebSocketToken:
+    raise newJoubakoError(
+      jeInvalidRequest, "invalid WebSocket subprotocol", url
+    )
+  if headers.contains("sec-websocket-protocol"):
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "Sec-WebSocket-Protocol must be supplied through the subprotocol argument",
+      url
     )
   for name, value in headers.pairs:
     if name.len == 0 or name.contains({'\r', '\n'}) or
@@ -147,10 +169,12 @@ proc connectWebSocket*(
       "Connection: Upgrade\r\n" &
       "Sec-WebSocket-Version: 13\r\n" &
       "Sec-WebSocket-Key: " & key & "\r\n"
+    if subprotocol.len > 0:
+      requestHeaders.add "Sec-WebSocket-Protocol: " & subprotocol & "\r\n"
     for name, value in headers.pairs:
       if name notin [
           "host", "upgrade", "connection", "sec-websocket-version",
-          "sec-websocket-key"]:
+          "sec-websocket-key", "sec-websocket-protocol"]:
         requestHeaders.add name & ": " & value & "\r\n"
     requestHeaders.add "\r\n"
     await socket.send(requestHeaders)
@@ -189,8 +213,14 @@ proc connectWebSocket*(
       raise newJoubakoError(
         jeTransport, "invalid WebSocket upgrade response", url
       )
+    if subprotocol.len > 0 and
+        responseHeaders.headerValue("sec-websocket-protocol") != subprotocol:
+      raise newJoubakoError(
+        jeTransport, "WebSocket server did not accept the requested subprotocol",
+        url
+      )
     keepSocket = true
-    return WebSocket(socket: socket, url: url)
+    return WebSocket(socket: socket, url: url, subprotocol: subprotocol)
   except JoubakoError:
     raise
   except CatchableError as error:
@@ -308,6 +338,13 @@ proc close*(websocket: WebSocket): Future[void] {.async.} =
     await websocket.socket.send(encodeFrame(8, ""))
   finally:
     websocket.socket.close()
+
+proc abort*(websocket: WebSocket) =
+  ## Immediately releases the socket and wakes any pending receive operation.
+  if websocket == nil or websocket.closed:
+    return
+  websocket.closed = true
+  websocket.socket.close()
 
 method send*(
     transport: WebSocketTransport;

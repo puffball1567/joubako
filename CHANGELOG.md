@@ -15,6 +15,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Incremental file-backed multipart uploads over HTTP/2, including bounded
   wire-size validation, progress, cancellation, transmitted filename privacy,
   and correct replay or body removal across redirects.
+- Typed long-lived GraphQL operations over `graphql-transport-ws`, including
+  verified subprotocol negotiation, connection parameters, extensions,
+  ping/pong, bounded messages, cancellation, typed streamed results, terminal
+  GraphQL errors, and explicit completion.
 
 ## [0.1.1] - 2026-08-03
 

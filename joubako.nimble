@@ -40,6 +40,7 @@ const testPrograms = [
   ("opentelemetry", "tests/test_opentelemetry.nim"),
   ("httpcache", "tests/test_httpcache.nim"),
   ("graphql", "tests/test_graphql.nim"),
+  ("graphql-subscription", "tests/test_graphql_subscription.nim"),
 ]
 
 proc runTestSuite(memoryManager: string) =
@@ -136,6 +137,7 @@ const leakPrograms = [
   ("opentelemetry", "tests/opentelemetry_leak_probe.nim", true),
   ("httpcache", "tests/httpcache_leak_probe.nim", true),
   ("graphql", "tests/graphql_leak_probe.nim", true),
+  ("graphql-ws", "tests/graphql_ws_leak_probe.nim", true),
 ]
 
 proc runLeakSuite(memoryManager: string) =

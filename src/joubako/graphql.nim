@@ -4,11 +4,15 @@
 ## document parsing; Joubako owns HTTP policy, JSON envelopes, and Result
 ## boundaries.
 
-import std/[asyncdispatch, json, jsonutils, options, sets, strutils]
+import std/[asyncdispatch, json, jsonutils, monotimes, options, sets, strutils,
+  times]
 import pkg/faststreams/inputs
 import ./vendor/nim_graphql/graphql/query_parser
 import ./vendor/nim_graphql/graphql/common/errors
 import ./[client, jsoncodec, result, types]
+import ./transports/websocket
+
+const GraphqlTransportWs* = "graphql-transport-ws"
 
 type
   GraphqlOperationKind* = enum
@@ -100,6 +104,31 @@ type
     data*: Option[T]
     errors*: seq[GraphqlError]
     extensions*: JsonNode
+
+  GraphqlSubscriptionOptions* = object
+    ## WebSocket upgrade deadline. A negative value disables it.
+    handshakeTimeoutMs*: int
+    ## Maximum wait for `connection_ack`. A negative value disables it.
+    connectionAckTimeoutMs*: int
+    ## Maximum size of one protocol message. A negative value disables it.
+    maxMessageBytes*: int
+    cancellation*: CancellationToken
+
+  GraphqlSubscription*[T] = ref object
+    websocket: WebSocket
+    codecOptions: JsonCodecOptions
+    cancellation: CancellationToken
+    maxMessageBytes: int
+    url*: string
+    operationId*: string
+    completed*: bool
+
+func defaultGraphqlSubscriptionOptions*(): GraphqlSubscriptionOptions =
+  GraphqlSubscriptionOptions(
+    handshakeTimeoutMs: 30_000,
+    connectionAckTimeoutMs: 30_000,
+    maxMessageBytes: 16 * 1024 * 1024
+  )
 
 proc gqlVariable*(name: string): GraphqlValue =
   GraphqlValue(kind: gvkVariable, text: name)
@@ -592,16 +621,10 @@ proc decodeGraphqlError(node: JsonNode): GraphqlError =
       raise newException(ValueError, "GraphQL error extensions must be an object")
     result.extensions = node["extensions"]
 
-proc decodeGraphqlResponse[T](
-    response: Response;
+proc decodeGraphqlPayload[T](
+    root: JsonNode;
     codecOptions: JsonCodecOptions
 ): GraphqlResponse[T] =
-  if response.headers.contains("content-type"):
-    let mediaType = response.headers.get("content-type")
-      .split(';', maxsplit = 1)[0].strip.toLowerAscii
-    if mediaType notin ["application/json", "application/graphql-response+json"]:
-      raise newException(ValueError, "unexpected GraphQL response media type")
-  let root = response.body.parseJson
   if root.kind != JObject:
     raise newException(ValueError, "GraphQL response must be a JSON object")
   if not root.hasKey("data") and not root.hasKey("errors"):
@@ -617,6 +640,17 @@ proc decodeGraphqlResponse[T](
     if root["extensions"].kind != JObject:
       raise newException(ValueError, "GraphQL extensions must be an object")
     result.extensions = root["extensions"]
+
+proc decodeGraphqlResponse[T](
+    response: Response;
+    codecOptions: JsonCodecOptions
+): GraphqlResponse[T] =
+  if response.headers.contains("content-type"):
+    let mediaType = response.headers.get("content-type")
+      .split(';', maxsplit = 1)[0].strip.toLowerAscii
+    if mediaType notin ["application/json", "application/graphql-response+json"]:
+      raise newException(ValueError, "unexpected GraphQL response media type")
+  decodeGraphqlPayload[T](response.body.parseJson, codecOptions)
 
 proc decodeGraphqlResponseResult[T](
     response: Response;
@@ -693,3 +727,377 @@ proc executeGraphql*[T](
     client, path, document, variables, operationName, headers, options,
     codecOptions
   )
+
+proc protocolMessage(message, url: string): JResult[JsonNode] =
+  var parsed: JsonNode
+  try:
+    parsed = message.parseJson
+  except CatchableError as error:
+    return err[JsonNode](newJoubakoError(
+      jeCodec, "invalid GraphQL WebSocket JSON: " & error.msg, url
+    ))
+  if parsed.kind != JObject or not parsed.hasKey("type") or
+      parsed["type"].kind != JString:
+    return err[JsonNode](newJoubakoError(
+      jeCodec, "GraphQL WebSocket message must contain a string type", url
+    ))
+  ok(parsed)
+
+func hasValidControlPayload(message: JsonNode): bool =
+  not message.hasKey("payload") or
+    message["payload"].kind in {JObject, JNull}
+
+proc receiveProtocolMessage(
+    websocket: WebSocket;
+    url: string;
+    maxMessageBytes, timeoutMs: int;
+    cancellation: CancellationToken
+): Future[JResult[string]] {.async.} =
+  let received = settle(
+    fallible(websocket.receiveMessage(maxMessageBytes)), jeTransport, url
+  )
+  if cancellation != nil:
+    let cancelled = cancellation.cancellationFuture()
+    if timeoutMs >= 0:
+      let timer = sleepAsync(timeoutMs)
+      await ((received or cancelled) or timer)
+    else:
+      await (received or cancelled)
+    if not received.finished:
+      websocket.abort()
+      discard await received
+      if cancellation.cancelled:
+        return err[string](newJoubakoError(
+          jeCancelled, cancellation.reason, url
+        ))
+      return err[string](newJoubakoError(
+        jeTimeout, "GraphQL WebSocket acknowledgement timed out", url
+      ))
+  elif timeoutMs >= 0 and not await received.withTimeout(timeoutMs):
+    websocket.abort()
+    discard await received
+    return err[string](newJoubakoError(
+      jeTimeout, "GraphQL WebSocket acknowledgement timed out", url
+    ))
+  return await received
+
+proc sendProtocolMessage(
+    websocket: WebSocket;
+    payload: JsonNode;
+    maxMessageBytes: int
+): Future[JResult[void]] =
+  let encoded = $payload
+  if maxMessageBytes >= 0 and encoded.len > maxMessageBytes:
+    return completedResult(err[void](newJoubakoError(
+      jeBodyTooLarge,
+      "GraphQL WebSocket message exceeded the configured limit",
+      websocket.url
+    )))
+  settle(fallible(websocket.sendText(encoded)), jeTransport, websocket.url)
+
+proc respondToPing(
+    websocket: WebSocket;
+    message: JsonNode;
+    maxMessageBytes: int
+): Future[JResult[void]] =
+  var pong = %*{"type": "pong"}
+  if message.hasKey("payload"):
+    pong["payload"] = message["payload"]
+  websocket.sendProtocolMessage(pong, maxMessageBytes)
+
+proc openGraphqlSubscriptionImpl[T](
+    url: string;
+    source: string;
+    variables: JsonNode;
+    operationName: string;
+    headers: Headers;
+    connectionParams, extensions: JsonNode;
+    operationId: string;
+    options: GraphqlSubscriptionOptions;
+    codecOptions: JsonCodecOptions
+): Future[JResult[GraphqlSubscription[T]]] {.async.} =
+  let connected = await settle(fallible(connectWebSocket(
+    url, headers, options.handshakeTimeoutMs, options.cancellation,
+    GraphqlTransportWs
+  )), jeTransport, url)
+  if connected.isErr:
+    return err[GraphqlSubscription[T]](connected.error)
+  let websocket = connected.value
+  var retained = false
+  defer:
+    if not retained:
+      websocket.abort()
+
+  var connectionInit = %*{"type": "connection_init"}
+  if connectionParams != nil:
+    connectionInit["payload"] = connectionParams
+  let initSent = await websocket.sendProtocolMessage(
+    connectionInit, options.maxMessageBytes
+  )
+  if initSent.isErr:
+    return err[GraphqlSubscription[T]](initSent.error)
+
+  let acknowledgementStarted = getMonoTime()
+  while true:
+    let acknowledgementRemaining =
+      if options.connectionAckTimeoutMs < 0:
+        -1
+      else:
+        max(0, options.connectionAckTimeoutMs - int(
+          (getMonoTime() - acknowledgementStarted).inMilliseconds
+        ))
+    let received = await websocket.receiveProtocolMessage(
+      url, options.maxMessageBytes, acknowledgementRemaining,
+      options.cancellation
+    )
+    if received.isErr:
+      return err[GraphqlSubscription[T]](received.error)
+    let decoded = protocolMessage(received.value, url)
+    if decoded.isErr:
+      return err[GraphqlSubscription[T]](decoded.error)
+    let message = decoded.value
+    case message["type"].getStr
+    of "connection_ack":
+      if not message.hasValidControlPayload:
+        return err[GraphqlSubscription[T]](newJoubakoError(
+          jeCodec, "GraphQL connection_ack payload must be an object or null",
+          url
+        ))
+      break
+    of "ping":
+      if not message.hasValidControlPayload:
+        return err[GraphqlSubscription[T]](newJoubakoError(
+          jeCodec, "GraphQL ping payload must be an object or null", url
+        ))
+      let sent = await websocket.respondToPing(message, options.maxMessageBytes)
+      if sent.isErr:
+        return err[GraphqlSubscription[T]](sent.error)
+    of "pong":
+      if not message.hasValidControlPayload:
+        return err[GraphqlSubscription[T]](newJoubakoError(
+          jeCodec, "GraphQL pong payload must be an object or null", url
+        ))
+    else:
+      return err[GraphqlSubscription[T]](newJoubakoError(
+        jeTransport,
+        "expected connection_ack from GraphQL WebSocket server",
+        url
+      ))
+
+  var subscribePayload = newJObject()
+  subscribePayload["query"] = %source
+  subscribePayload["variables"] =
+    if variables == nil: newJObject() else: variables
+  if operationName.len > 0:
+    subscribePayload["operationName"] = %operationName
+  if extensions != nil:
+    subscribePayload["extensions"] = extensions
+  let subscribe = %*{
+    "id": operationId,
+    "type": "subscribe",
+    "payload": subscribePayload
+  }
+  let subscribed = await websocket.sendProtocolMessage(
+    subscribe, options.maxMessageBytes
+  )
+  if subscribed.isErr:
+    return err[GraphqlSubscription[T]](subscribed.error)
+  retained = true
+  return ok(GraphqlSubscription[T](
+    websocket: websocket,
+    codecOptions: codecOptions,
+    cancellation: options.cancellation,
+    maxMessageBytes: options.maxMessageBytes,
+    url: url,
+    operationId: operationId
+  ))
+
+proc openGraphqlSubscription*[T](
+    url: string;
+    document: GraphqlDocument;
+    _: typedesc[T];
+    variables: JsonNode = nil;
+    operationName = "";
+    headers = initHeaders();
+    connectionParams: JsonNode = nil;
+    extensions: JsonNode = nil;
+    operationId = "1";
+    options = defaultGraphqlSubscriptionOptions();
+    codecOptions = defaultJsonCodecOptions()
+): Future[JResult[GraphqlSubscription[T]]] =
+  if options.handshakeTimeoutMs < -1 or options.connectionAckTimeoutMs < -1 or
+      options.maxMessageBytes < -1:
+    return completedResult(err[GraphqlSubscription[T]](newJoubakoError(
+      jeInvalidRequest, "GraphQL WebSocket limits must be -1 or greater", url
+    )))
+  if options.cancellation != nil and options.cancellation.cancelled:
+    return completedResult(err[GraphqlSubscription[T]](newJoubakoError(
+      jeCancelled, options.cancellation.reason, url
+    )))
+  if operationId.len == 0 or operationId.contains({'\0', '\r', '\n'}):
+    return completedResult(err[GraphqlSubscription[T]](newJoubakoError(
+      jeInvalidRequest, "GraphQL WebSocket operation ID is invalid", url
+    )))
+  if operationName.len > 0 and not operationName.isGraphqlName:
+    let nameError = invalidName("operation name", operationName)
+    nameError.url = url
+    return completedResult(err[GraphqlSubscription[T]](nameError))
+  let rendered = document.renderGraphql()
+  if rendered.isErr:
+    rendered.error.url = url
+    return completedResult(err[GraphqlSubscription[T]](rendered.error))
+  let selectionError = document.validateSelectedOperation(operationName, url)
+  if selectionError != nil:
+    return completedResult(err[GraphqlSubscription[T]](selectionError))
+  if variables != nil and variables.kind != JObject:
+    return completedResult(err[GraphqlSubscription[T]](newJoubakoError(
+      jeInvalidRequest, "GraphQL variables must be a JSON object", url
+    )))
+  if connectionParams != nil and connectionParams.kind != JObject:
+    return completedResult(err[GraphqlSubscription[T]](newJoubakoError(
+      jeInvalidRequest, "GraphQL connection parameters must be a JSON object", url
+    )))
+  if extensions != nil and extensions.kind != JObject:
+    return completedResult(err[GraphqlSubscription[T]](newJoubakoError(
+      jeInvalidRequest, "GraphQL extensions must be a JSON object", url
+    )))
+  settleResult(fallible(openGraphqlSubscriptionImpl[T](
+    url, rendered.value, variables, operationName, headers, connectionParams,
+    extensions, operationId, options, codecOptions
+  )), jeTransport, url)
+
+proc nextImpl[T](
+    subscription: GraphqlSubscription[T]
+): Future[JResult[Option[GraphqlResponse[T]]]] {.async.} =
+  if subscription.completed:
+    return ok(none(GraphqlResponse[T]))
+  while true:
+    let received = await subscription.websocket.receiveProtocolMessage(
+      subscription.url, subscription.maxMessageBytes, -1,
+      subscription.cancellation
+    )
+    if received.isErr:
+      subscription.completed = true
+      subscription.websocket.abort()
+      return err[Option[GraphqlResponse[T]]](received.error)
+    let decoded = protocolMessage(received.value, subscription.url)
+    if decoded.isErr:
+      subscription.completed = true
+      subscription.websocket.abort()
+      return err[Option[GraphqlResponse[T]]](decoded.error)
+    let message = decoded.value
+    let messageType = message["type"].getStr
+    if messageType == "ping":
+      if not message.hasValidControlPayload:
+        subscription.completed = true
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](newJoubakoError(
+          jeCodec, "GraphQL ping payload must be an object or null",
+          subscription.url
+        ))
+      let sent = await subscription.websocket.respondToPing(
+        message, subscription.maxMessageBytes
+      )
+      if sent.isErr:
+        subscription.completed = true
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](sent.error)
+      continue
+    if messageType == "pong":
+      if not message.hasValidControlPayload:
+        subscription.completed = true
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](newJoubakoError(
+          jeCodec, "GraphQL pong payload must be an object or null",
+          subscription.url
+        ))
+      continue
+    if messageType notin ["next", "error", "complete"] or
+        not message.hasKey("id") or message["id"].kind != JString:
+      subscription.completed = true
+      subscription.websocket.abort()
+      return err[Option[GraphqlResponse[T]]](newJoubakoError(
+        jeCodec, "invalid GraphQL WebSocket operation message", subscription.url
+      ))
+    if message["id"].getStr != subscription.operationId:
+      continue
+    case messageType
+    of "next":
+      if not message.hasKey("payload") or message["payload"].kind != JObject:
+        subscription.completed = true
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](newJoubakoError(
+          jeCodec, "GraphQL next message must contain an object payload",
+          subscription.url
+        ))
+      try:
+        return ok(some(decodeGraphqlPayload[T](
+          message["payload"], subscription.codecOptions
+        )))
+      except CatchableError as error:
+        subscription.completed = true
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](newJoubakoError(
+          jeCodec, "could not decode GraphQL response: " & error.msg,
+          subscription.url
+        ))
+    of "error":
+      subscription.completed = true
+      if not message.hasKey("payload") or message["payload"].kind != JArray:
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](newJoubakoError(
+          jeCodec, "GraphQL error message must contain an array payload",
+          subscription.url
+        ))
+      var payload = newJObject()
+      payload["errors"] = message["payload"]
+      try:
+        return ok(some(decodeGraphqlPayload[T](
+          payload, subscription.codecOptions
+        )))
+      except CatchableError as error:
+        subscription.websocket.abort()
+        return err[Option[GraphqlResponse[T]]](newJoubakoError(
+          jeCodec, "could not decode GraphQL response: " & error.msg,
+          subscription.url
+        ))
+    of "complete":
+      subscription.completed = true
+      return ok(none(GraphqlResponse[T]))
+    else:
+      discard
+
+proc next*[T](
+    subscription: GraphqlSubscription[T]
+): Future[JResult[Option[GraphqlResponse[T]]]] =
+  if subscription == nil:
+    return completedResult(err[Option[GraphqlResponse[T]]](newJoubakoError(
+      jeInvalidRequest, "GraphQL subscription is nil"
+    )))
+  settleResult(fallible(subscription.nextImpl()), jeCodec, subscription.url)
+
+proc closeImpl[T](
+    subscription: GraphqlSubscription[T]
+): Future[JResult[void]] {.async.} =
+  if subscription == nil or subscription.websocket == nil:
+    return ok()
+  var outcome = ok()
+  if not subscription.completed and not subscription.websocket.closed:
+    outcome = await subscription.websocket.sendProtocolMessage(%*{
+      "id": subscription.operationId,
+      "type": "complete"
+    }, subscription.maxMessageBytes)
+  subscription.completed = true
+  let closed = await settle(
+    fallible(subscription.websocket.close()), jeTransport, subscription.url
+  )
+  if outcome.isErr:
+    return outcome
+  closed
+
+proc close*[T](
+    subscription: GraphqlSubscription[T]
+): Future[JResult[void]] =
+  if subscription == nil:
+    return completedResult(ok())
+  settleResult(fallible(subscription.closeImpl()), jeTransport, subscription.url)
