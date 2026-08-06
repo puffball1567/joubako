@@ -2,7 +2,7 @@
 
 ## Async networking, finally built for Nim.
 
-**Axios-style flow. Native `await`. Typed failures. Deterministic ARC.**
+**Axios-style flow. Native `await`. Typed failures. ARC and ORC.**
 
 Joubako is the native async transport client for Nim. It replaces transport
 plumbing with clear application code—and keeps that code in control when the
@@ -24,8 +24,8 @@ and in-process calls.
 - **Survive real networks.** Verified TLS, bounded streaming and decompression,
   safe redirects, proxies, retry, circuit breakers, rate limits, and bulkheads
   are built in.
-- **Keep memory behavior predictable.** Joubako is developed with deterministic
-  ARC and hammered under Valgrind on success and failure paths.
+- **Keep memory behavior predictable.** Joubako is tested with ARC and ORC and
+  hammered under Valgrind on success and failure paths under both models.
 - **Use one model everywhere.** Typed JSON, pluggable codecs, NIF/BIF,
   typed GraphQL, multipart uploads, WebSockets, Unix-domain IPC, and in-process
   transports all speak the same request, result, cancellation, and deadline
@@ -61,8 +61,8 @@ Third-party attribution is collected in
 
 ## Getting started
 
-Joubako requires Nim 2.2 or newer and is developed with ARC. Install it and
-its declared dependencies through Nimble:
+Joubako requires Nim 2.2 or newer and supports both ARC and ORC. Install it
+and its declared dependencies through Nimble:
 
 ```sh
 nimble install joubako
@@ -96,6 +96,13 @@ This is the recommended build command for normal Joubako applications.
 requests to use TLS. Keeping it enabled means the same binary can use HTTP,
 HTTPS, WS, and WSS without changing its build configuration.
 
+ORC is supported by the same public API. Select it explicitly when the
+application benefits from cycle collection:
+
+```sh
+nim c -r --mm:orc -d:ssl app.nim
+```
+
 For a deliberately TLS-free target without OpenSSL, use the minimal build:
 
 ```sh
@@ -109,7 +116,7 @@ remain available without `-d:ssl`. The example above is available as
 For complete client-and-server examples, see the
 [`examples/frameworks`](examples/frameworks/README.md) demos. One shared
 Joubako client calls equivalent APIs implemented with **Express, NestJS,
-Flask, FastAPI, Laravel, Prologue, and nim-basolato**. The same ARC client is
+Flask, FastAPI, Laravel, Prologue, and nim-basolato**. The same client is
 verified through real HTTP communication across Node.js, TypeScript, Python,
 PHP, and Nim—including typed JSON, custom headers, validation, and HTTP error
 handling.
@@ -201,18 +208,20 @@ Keep one transport alive and call `await transport.close()` during orderly
 shutdown. A shared transport reuses connections and multiplexes concurrent
 requests over the same HTTP/2 connection.
 
-## ARC memory model
+## ARC and ORC memory models
 
-Joubako is developed and tested with Nim's deterministic ARC memory manager.
-The repository `config.nims` selects `--mm:arc`, and the Valgrind task repeats
-that selection explicitly.
+Joubako's complete suite, secure-transport integration tests, hardening probes,
+real-network E2E tests, and Valgrind leak probes run with both Nim memory
+managers. The repository `config.nims` selects `--mm:arc` as the default;
+passing `--mm:orc` explicitly overrides it without changing the Joubako API.
 
 ARC deliberately does not collect reference cycles. Callbacks and interceptors
 that outlive a request therefore must not capture the same async frame or owner
 object that stores them. Put mutable callback state in a separate `ref object`
 and create the callback outside the owning async procedure when necessary.
-The leak probe follows this pattern and fails if a cycle or another allocation
-remains at process exit.
+ORC adds cycle collection to ARC, but Joubako does not rely on cycles for
+correctness. The leak probes follow the cycle-free pattern and fail if owned
+allocations remain at process exit under either memory manager.
 
 ## Await
 
@@ -365,7 +374,7 @@ encoding policies while retaining the typed helper API.
 ## GraphQL
 
 Build an executable document from typed values, then send it through the same
-Joubako client, transport policy, limits, cancellation, and ARC-safe Result
+Joubako client, transport policy, limits, cancellation, and ARC/ORC-safe Result
 boundary used by every other request:
 
 ```nim
@@ -861,16 +870,22 @@ For a long-lived connection, use `connectWebSocket`, `sendText`,
 
 ```sh
 nimble test
+nimble testOrc
 nimble testSsl
+nimble testSslOrc
 ```
 
 Deterministic hardening targets are separate from the fast unit suite:
 
 ```sh
 nimble fuzz
+nimble fuzzOrc
 nimble soak
+nimble soakOrc
 nimble e2eHost
+nimble e2eHostOrc
 nimble e2e
+nimble e2eOrc
 ```
 
 `fuzz` generates malformed Cookie, proxy-bypass, retry-date, query, gzip, and
@@ -900,15 +915,16 @@ The HTTP integration test binds only to a local loopback socket.
 `testSsl` performs real loopback TLS and mTLS handshakes and exercises an
 authenticated SOCKS5h proxy without contacting the public network.
 The IPC tests use a temporary Unix domain socket on POSIX systems.
-CI runs the suite on Linux, macOS, and Windows with Nim 2.2.0 and the current
-stable Nim release. Linux additionally builds the SSL configuration and runs
-the secure-transport integration suite.
+CI runs ARC and ORC suites on Linux, macOS, and Windows with Nim 2.2.0 and the
+current stable Nim release. Linux additionally builds both SSL configurations
+and runs both secure-transport integration suites.
 
-The allocation lifecycle probe runs under Valgrind with ARC and
+The allocation lifecycle probes run under Valgrind with ARC and ORC plus
 `-d:useMalloc`, so Nim allocations are visible to Memcheck:
 
 ```sh
 nimble leak
+nimble leakOrc
 ```
 
 It fails on definite, indirect, or possible leaks and exercises repeated
@@ -916,7 +932,9 @@ successful requests, typed JSON decoding, Promise callbacks, interceptors,
 FlowBrigade-backed guards, structured HTTP and transport failures, `all`, and
 discarded callback chains. Public request failures cross an internal settling
 boundary and become `JResult.Err`, so the error-path probe also finishes with
-zero bytes in use under ARC without broad Valgrind suppressions. A dedicated
+zero definite, indirect, and possible loss under ARC and ORC without broad
+Valgrind suppressions. ORC keeps its cycle-registration buffer reachable until
+process exit; this is reported separately from lost memory. A dedicated
 fault-injection probe additionally repeats retry recovery from transport and
 HTTP failures.
 

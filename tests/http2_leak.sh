@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-probe=/tmp/joubako-http2-leak-probe
+memory_manager=${1:-arc}
+if [[ "$memory_manager" != "arc" && "$memory_manager" != "orc" ]]; then
+  echo "unsupported memory manager: $memory_manager" >&2
+  exit 2
+fi
 
-nim c -d:release -d:useMalloc --mm:arc \
-  --nimcache:/tmp/joubako-http2-leak-probe-cache \
+probe="/tmp/joubako-${memory_manager}-http2-leak-probe"
+
+nim c -d:release -d:useMalloc --mm:"$memory_manager" \
+  --nimcache:"/tmp/joubako-${memory_manager}-http2-leak-probe-cache" \
   --out:"$probe" tests/http2_leak_probe.nim
 
 JOUBAKO_HTTP2_PORT=18943 node tests/http2_server.mjs &

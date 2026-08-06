@@ -6,15 +6,23 @@ RUN git clone --depth 1 --branch v0.5.0 \
       https://github.com/puffball1567/nifkit.git /deps/nifkit \
     && git clone --depth 1 --branch v0.2.0 --recurse-submodules \
       https://github.com/status-im/nim-zlib.git /deps/zlib \
-    && git clone --depth 1 --branch v0.4.2 \
+    && git clone --depth 1 --branch v0.5.1 \
       https://github.com/status-im/nim-stew.git /deps/stew \
     && git clone --depth 1 --branch v0.5.1 \
       https://github.com/arnetheduck/nim-results.git /deps/results \
     && git clone --depth 1 --branch v0.2.5 \
-      https://github.com/status-im/nim-unittest2.git /deps/unittest2
+      https://github.com/status-im/nim-unittest2.git /deps/unittest2 \
+    && git clone https://github.com/Araq/libcurl.git /deps/libcurl \
+    && cd /deps/libcurl \
+    && git checkout 177d7007155096f9091126f81e7dda0032bffe9d \
+    && git clone https://github.com/status-im/nim-faststreams.git /deps/faststreams \
+    && cd /deps/faststreams \
+    && git checkout 50889cd16ec8771106cdd0eeea460039e8571e06
 
 WORKDIR /workspace/joubako
 COPY . .
+
+ARG JOUBAKO_MEMORY_MANAGER=arc
 
 RUN nimble develop -y -a:/deps/flowbrigade \
     && nimble develop -y -a:/deps/nifkit \
@@ -22,9 +30,10 @@ RUN nimble develop -y -a:/deps/flowbrigade \
     && nimble develop -y -a:/deps/unittest2 \
     && nimble develop -y -a:/deps/stew \
     && nimble develop -y -a:/deps/zlib \
+    && nimble develop -y -a:/deps/libcurl \
+    && nimble develop -y -a:/deps/faststreams \
     && nimble --legacy --offline setup \
-    && nim c -d:release --mm:arc --path:src \
+    && nim c -d:release --mm:${JOUBAKO_MEMORY_MANAGER} --path:src \
       --out:/usr/local/bin/joubako-e2e tests/e2e/client.nim
 
 CMD ["/usr/local/bin/joubako-e2e"]
-
