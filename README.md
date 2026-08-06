@@ -26,10 +26,10 @@ and in-process calls.
   are built in.
 - **Keep memory behavior predictable.** Joubako is tested with ARC and ORC and
   hammered under Valgrind on success and failure paths under both models.
-- **Use one model everywhere.** Typed JSON, pluggable codecs, NIF/BIF,
-  typed GraphQL, multipart uploads, WebSockets, Unix-domain IPC, and in-process
-  transports all speak the same request, result, cancellation, and deadline
-  language.
+- **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, pluggable codecs,
+  NIF/BIF, typed GraphQL, multipart uploads, WebSockets, Unix-domain IPC, and
+  in-process transports all speak the same request, result, cancellation, and
+  deadline language.
 
 From a single GET to a resilient native service client, Joubako keeps the code
 clear and the network under control.
@@ -162,6 +162,8 @@ The current implementation includes:
 - `then`, `catch`, `finally`, and `all` composition over the same Result-valued
   `Future`;
 - typed JSON encoding and decoding;
+- JSON-RPC 2.0 calls, notifications, and mixed batches over HTTP, plus
+  response-bearing calls and batches over one-shot WebSocket;
 - typed GraphQL query, mutation, subscription, variable, directive, and
   fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
@@ -371,6 +373,49 @@ precedence.
 JSON behavior can be adjusted through `JsonCodecOptions` or a reusable
 `jsonCodec[TBody, TResponse]`. This exposes Nim's extra/missing-key and enum
 encoding policies while retaining the typed helper API.
+
+## JSON-RPC 2.0
+
+JSON-RPC method calls return typed results while keeping protocol-level method
+errors distinct from transport, HTTP, limit, and decoding failures:
+
+```nim
+type Sum = object
+  total: int
+
+let outcome = await api.callJsonRpc(
+  "rpc", "sum", %*[2, 3], Sum, jsonRpcId("sum-1")
+)
+if outcome.isErr:
+  echo outcome.error.msg                 # network/HTTP/codec failure
+elif outcome.value.isError:
+  echo outcome.value.error.code          # JSON-RPC method error
+else:
+  echo outcome.value.result.total
+```
+
+Notifications deliberately omit `id` and require an empty protocol response:
+
+```nim
+let sent = await api.notifyJsonRpc("rpc", "audit", %*{"event": "login"})
+```
+
+Mixed batches accept responses in any order, match every response by its
+string or integer ID, and reject duplicate, unknown, or missing IDs:
+
+```nim
+let replies = await api.sendJsonRpcBatch("rpc", [
+  jsonRpcCall("user.get", jsonRpcId(1), %*{"id": 42}),
+  jsonRpcNotification("audit", %*{"event": "lookup"}),
+  jsonRpcCall("health", jsonRpcId("health"))
+])
+```
+
+The same call API works over the one-request/one-response WebSocket transport
+by constructing the client with `newWebSocketTransport()`. Long-lived,
+multiplexed JSON-RPC sessions are intentionally not implied by this helper.
+Request `maxResponseBytes`, cancellation, deadlines, host allowlists, retries,
+and other Joubako policies continue to apply at the transport layer.
 
 ## GraphQL
 

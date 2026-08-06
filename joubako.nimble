@@ -41,6 +41,7 @@ const testPrograms = [
   ("httpcache", "tests/test_httpcache.nim"),
   ("graphql", "tests/test_graphql.nim"),
   ("graphql-subscription", "tests/test_graphql_subscription.nim"),
+  ("json-rpc", "tests/test_jsonrpc.nim"),
 ]
 
 proc runTestSuite(memoryManager: string) =
@@ -138,6 +139,7 @@ const leakPrograms = [
   ("httpcache", "tests/httpcache_leak_probe.nim", true),
   ("graphql", "tests/graphql_leak_probe.nim", true),
   ("graphql-ws", "tests/graphql_ws_leak_probe.nim", true),
+  ("json-rpc", "tests/jsonrpc_leak_probe.nim", true),
 ]
 
 proc runLeakSuite(memoryManager: string) =
