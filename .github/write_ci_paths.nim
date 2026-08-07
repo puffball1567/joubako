@@ -10,6 +10,9 @@ const dependencyPaths = [
   "_deps/zlib",
   "_deps/libcurl",
   "_deps/faststreams",
+  "_deps/serialization",
+  "_deps/cbor_serialization",
+  "_deps/npeg/src",
 ]
 
 let root = getCurrentDir()

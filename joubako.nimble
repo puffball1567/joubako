@@ -12,6 +12,7 @@ requires "nifkit >= 0.2.0"
 requires "zlib >= 0.2.0"
 requires "libcurl >= 1.0.0"
 requires "faststreams >= 0.5.1"
+requires "cbor_serialization >= 0.4.2"
 
 proc temporary(name: string): string =
   quoteShell(getTempDir() / name)
@@ -43,6 +44,7 @@ const testPrograms = [
   ("graphql-subscription", "tests/test_graphql_subscription.nim"),
   ("json-rpc", "tests/test_jsonrpc.nim"),
   ("json-stream", "tests/test_jsonstream.nim"),
+  ("cbor-codec", "tests/test_cborcodec.nim"),
 ]
 
 proc runTestSuite(memoryManager: string) =
@@ -142,6 +144,7 @@ const leakPrograms = [
   ("graphql-ws", "tests/graphql_ws_leak_probe.nim", true),
   ("json-rpc", "tests/jsonrpc_leak_probe.nim", true),
   ("json-stream", "tests/jsonstream_leak_probe.nim", true),
+  ("cbor-codec", "tests/cborcodec_leak_probe.nim", true),
 ]
 
 proc runLeakSuite(memoryManager: string) =

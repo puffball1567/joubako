@@ -26,10 +26,10 @@ and in-process calls.
   are built in.
 - **Keep memory behavior predictable.** Joubako is tested with ARC and ORC and
   hammered under Valgrind on success and failure paths under both models.
-- **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, pluggable codecs,
-  NIF/BIF, typed GraphQL, multipart uploads, WebSockets, Unix-domain IPC, and
-  in-process transports all speak the same request, result, cancellation, and
-  deadline language.
+- **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, CBOR, pluggable
+  codecs, NIF/BIF, typed GraphQL, multipart uploads, WebSockets, Unix-domain
+  IPC, and in-process transports all speak the same request, result,
+  cancellation, and deadline language.
 
 From a single GET to a resilient native service client, Joubako keeps the code
 clear and the network under control.
@@ -56,6 +56,9 @@ HTTP/2 support; libcurl commonly delegates framing and HPACK to nghttp2.
 GraphQL executable documents are validated with the maintained
 `status-im/nim-graphql` parser; Joubako owns the typed builder, HTTP envelope,
 response decoding, limits, and Result boundary.
+RFC 8949 CBOR encoding and bounded decoding are provided by
+`vacp2p/nim-cbor-serialization`; Joubako supplies strict message framing,
+HTTP media-type handling, transport limits, and structured errors.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
@@ -165,6 +168,8 @@ The current implementation includes:
 - JSON-RPC 2.0 calls, notifications, and mixed batches over HTTP, plus
   response-bearing calls and batches over one-shot WebSocket;
 - typed, backpressured NDJSON and RFC 7464 JSON Text Sequence streaming;
+- typed RFC 8949 CBOR requests and responses with strict framing and bounded
+  parsing;
 - typed GraphQL query, mutation, subscription, variable, directive, and
   fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
@@ -453,6 +458,43 @@ NDJSON uses `application/x-ndjson`; the registered JSON Text Sequence media
 type is `application/json-seq`. See the
 [NDJSON 1.0 specification](https://github.com/ndjson/ndjson-spec) and
 [RFC 7464](https://www.rfc-editor.org/rfc/rfc7464.html).
+
+## CBOR
+
+Send compact binary RFC 8949 payloads without giving up Joubako's typed Result
+and transport policy:
+
+```nim
+type
+  Command = object
+    id: uint64
+    payload: seq[byte]
+
+  Reply = object
+    accepted: bool
+
+let outcome = await api.postCbor(
+  "commands",
+  Command(id: 42, payload: @[0'u8, 1, 255]),
+  Reply
+)
+if outcome.isOk and outcome.value.accepted:
+  echo "accepted"
+```
+
+`postCbor`, `putCbor`, `patchCbor`, `sendCbor`, and `getCbor` use
+`application/cbor` and preserve arbitrary binary bytes. A caller-provided
+Content-Type or Accept header takes precedence; `application/*+cbor` responses
+are accepted. Present incompatible response media types fail closed, while
+requiring the header itself is configurable for compatibility with simple
+servers.
+
+`CborCodecOptions` exposes nesting, array, map, text, byte-string, and bignum
+parser limits, a payload-size bound, and strict trailing-data rejection. The
+normal Joubako request/response byte limits, status handling, retry,
+cancellation, deadlines, and host policy still apply before decoding. Direct
+`encodeCborPayload` and `decodeCborPayload` helpers use the same boundaries.
+See [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html).
 
 ## GraphQL
 
