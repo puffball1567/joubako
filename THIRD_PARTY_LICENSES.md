@@ -304,6 +304,18 @@ executable-document lexer and parser. It does not use nim-graphql's HTTP client
 or server runtime. Joubako elects the Apache License 2.0 terms reproduced
 earlier in this file.
 
+## CBOR serialization dependency
+
+### nim-cbor-serialization
+
+- Version: 0.4.2 or later compatible release
+- Source: https://github.com/vacp2p/nim-cbor-serialization
+- Copyright: Copyright (c) 2025 Status Research & Development GmbH
+- License: Apache License 2.0 or MIT License, at the user's option
+
+Joubako uses nim-cbor-serialization for RFC 8949 encoding and bounded parsing
+and elects the Apache License 2.0 terms reproduced earlier in this file.
+
 ## Nim package-resolution dependencies
 
 The following packages are direct or transitive dependencies resolved by
@@ -320,6 +332,24 @@ their API.
 faststreams supplies the bounded in-memory input abstraction used by the
 nim-graphql parser. The Apache License 2.0 terms are reproduced earlier in this
 file.
+
+### serialization
+
+- Version: 0.5.3 or later compatible release
+- Source: https://github.com/status-im/nim-serialization
+- Copyright: Copyright (c) Status Research & Development GmbH and contributors
+- License: Apache License 2.0
+
+serialization supplies the extensible typed reader/writer framework used by
+nim-cbor-serialization. The Apache License 2.0 terms are reproduced earlier in
+this file.
+
+### npeg
+
+- Version: 1.3.0 or later compatible release
+- Source: https://github.com/zevv/npeg
+- Copyright: Copyright (c) Ico Doornekamp
+- License: MIT License
 
 ### Stew
 

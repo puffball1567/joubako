@@ -50,6 +50,22 @@ proc fuzzJsonStreams(payload: string) =
       if finished.isErr:
         doAssert finished.error.kind in {jeCodec, jeBodyTooLarge}
 
+proc fuzzCbor(payload: string) =
+  var options = defaultCborCodecOptions()
+  options.maxPayloadBytes = 512
+  options.readerConf.nestedDepthLimit = 16
+  options.readerConf.arrayElementsLimit = 64
+  options.readerConf.objectFieldsLimit = 64
+  options.readerConf.stringLengthLimit = 256
+  options.readerConf.byteStringLengthLimit = 256
+  for decoded in [
+      tryDecodeCborPayload(payload, uint64, options).isOk,
+      tryDecodeCborPayload(payload, string, options).isOk,
+      tryDecodeCborPayload(payload, seq[byte], options).isOk,
+      tryDecodeCborPayload(payload, CborValueRef, options).isOk
+  ]:
+    discard decoded
+
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)
   let iterations = getEnv("JOUBAKO_FUZZ_ITERATIONS", "10000").parseInt
@@ -73,6 +89,7 @@ proc main(): Future[void] {.async.} =
       (name: payload, value: randomBytes(64))
     ])
     fuzzJsonStreams(payload)
+    fuzzCbor(payload)
     if index mod 10 == 0:
       await fuzzCompression(payload)
 
