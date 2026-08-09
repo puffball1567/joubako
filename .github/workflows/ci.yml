@@ -93,6 +93,13 @@ jobs:
           ref: v0.4.2
           path: _deps/cbor_serialization
 
+      - name: Checkout Protobuf serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-protobuf-serialization
+          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          path: _deps/protobuf_serialization
+
       - name: Checkout npeg
         uses: actions/checkout@v4
         with:
@@ -118,6 +125,7 @@ jobs:
           nimble develop -y -a:_deps/serialization
           nimble develop -y -a:_deps/npeg
           nimble develop -y -a:_deps/cbor_serialization
+          nimble develop -y -a:_deps/protobuf_serialization
 
       - name: Generate pinned dependency paths
         run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
@@ -245,6 +253,13 @@ jobs:
           ref: v0.4.2
           path: _deps/cbor_serialization
 
+      - name: Checkout Protobuf serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-protobuf-serialization
+          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          path: _deps/protobuf_serialization
+
       - name: Checkout npeg
         uses: actions/checkout@v4
         with:
@@ -270,6 +285,7 @@ jobs:
           nimble develop -y -a:_deps/serialization
           nimble develop -y -a:_deps/npeg
           nimble develop -y -a:_deps/cbor_serialization
+          nimble develop -y -a:_deps/protobuf_serialization
 
       - name: Generate pinned dependency paths
         run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
@@ -404,6 +420,13 @@ jobs:
           ref: v0.4.2
           path: _deps/cbor_serialization
 
+      - name: Checkout Protobuf serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-protobuf-serialization
+          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          path: _deps/protobuf_serialization
+
       - name: Checkout npeg
         uses: actions/checkout@v4
         with:
@@ -429,6 +452,7 @@ jobs:
           nimble develop -y -a:_deps/serialization
           nimble develop -y -a:_deps/npeg
           nimble develop -y -a:_deps/cbor_serialization
+          nimble develop -y -a:_deps/protobuf_serialization
 
       - name: Generate pinned dependency paths
         run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim

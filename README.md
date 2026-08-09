@@ -26,10 +26,10 @@ and in-process calls.
   are built in.
 - **Keep memory behavior predictable.** Joubako is tested with ARC and ORC and
   hammered under Valgrind on success and failure paths under both models.
-- **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, CBOR, pluggable
-  codecs, NIF/BIF, typed GraphQL, multipart uploads, WebSockets, Unix-domain
-  IPC, and in-process transports all speak the same request, result,
-  cancellation, and deadline language.
+- **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, CBOR, Protocol
+  Buffers, pluggable codecs, NIF/BIF, typed GraphQL, multipart uploads,
+  WebSockets, Unix-domain IPC, and in-process transports all speak the same
+  request, result, cancellation, and deadline language.
 
 From a single GET to a resilient native service client, Joubako keeps the code
 clear and the network under control.
@@ -59,6 +59,10 @@ response decoding, limits, and Result boundary.
 RFC 8949 CBOR encoding and bounded decoding are provided by
 `vacp2p/nim-cbor-serialization`; Joubako supplies strict message framing,
 HTTP media-type handling, transport limits, and structured errors.
+Protocol Buffers schema validation, proto2/proto3/Edition wire encoding, and
+compile-time `.proto` type generation are provided by
+`status-im/nim-protobuf-serialization`; Joubako supplies the HTTP and Result
+boundary.
 Third-party attribution is collected in
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
@@ -170,6 +174,8 @@ The current implementation includes:
 - typed, backpressured NDJSON and RFC 7464 JSON Text Sequence streaming;
 - typed RFC 8949 CBOR requests and responses with strict framing and bounded
   parsing;
+- typed Protocol Buffers binary requests and responses with compile-time
+  `.proto` schema generation and strict media-type validation;
 - typed GraphQL query, mutation, subscription, variable, directive, and
   fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
@@ -495,6 +501,50 @@ normal Joubako request/response byte limits, status handling, retry,
 cancellation, deadlines, and host policy still apply before decoding. Direct
 `encodeCborPayload` and `decodeCborPayload` helpers use the same boundaries.
 See [RFC 8949](https://www.rfc-editor.org/rfc/rfc8949.html).
+
+## Protocol Buffers
+
+Declare a proto3 schema directly in Nim and send its compact binary wire form:
+
+```nim
+type
+  Command {.proto3.} = object
+    id {.fieldNumber: 1, pint.}: uint64
+    payload {.fieldNumber: 2.}: seq[byte]
+
+  Reply {.proto3.} = object
+    accepted {.fieldNumber: 1.}: bool
+
+let outcome = await api.postProtobuf(
+  "commands",
+  Command(id: 42, payload: @[0'u8, 1, 255]),
+  Reply
+)
+```
+
+Existing proto3 schema files can generate the equivalent Nim types at compile
+time without a separate `protoc` step:
+
+```nim
+from protobuf_serialization/proto_parser import import_proto3
+import_proto3 "messages.proto3"
+```
+
+`postProtobuf`, `putProtobuf`, `patchProtobuf`, `sendProtobuf`, and
+`getProtobuf` use the standard `application/protobuf` binary media type.
+Common legacy media types can be accepted for existing services or disabled
+for standard-only endpoints. Invalid binary `encoding`, `charset`, and
+unversioned wire-format parameters fail closed.
+
+The direct encode/decode helpers and HTTP codec enforce a payload bound in
+addition to Joubako's streaming request/response limits. Schema validation,
+required proto2 fields, packed values, nested messages, oneof, and unknown
+field handling come from the maintained serialization dependency. Because the
+Protobuf wire format is not self-delimiting, one HTTP body represents one
+message; concatenated messages are interpreted using Protobuf's normal merge
+semantics. See the official
+[Protobuf overview](https://protobuf.dev/overview/) and
+[MIME type rules](https://protobuf.dev/reference/protobuf/mime-types/).
 
 ## GraphQL
 

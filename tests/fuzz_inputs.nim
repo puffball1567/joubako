@@ -2,6 +2,10 @@ import std/[asyncdispatch, os, random, strutils, times]
 import joubako
 import joubako/compression
 
+type FuzzProtobuf {.proto3.} = object
+  id {.fieldNumber: 1, pint.}: uint64
+  payload {.fieldNumber: 2.}: seq[byte]
+
 proc randomBytes(maxLength: int): string =
   result = newString(rand(maxLength))
   for index in 0 ..< result.len:
@@ -66,6 +70,13 @@ proc fuzzCbor(payload: string) =
   ]:
     discard decoded
 
+proc fuzzProtobuf(payload: string) =
+  var options = defaultProtobufCodecOptions()
+  options.maxPayloadBytes = 512
+  let decoded = tryDecodeProtobufPayload(payload, FuzzProtobuf, options)
+  if decoded.isErr:
+    doAssert decoded.error.kind == jeCodec
+
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)
   let iterations = getEnv("JOUBAKO_FUZZ_ITERATIONS", "10000").parseInt
@@ -90,6 +101,7 @@ proc main(): Future[void] {.async.} =
     ])
     fuzzJsonStreams(payload)
     fuzzCbor(payload)
+    fuzzProtobuf(payload)
     if index mod 10 == 0:
       await fuzzCompression(payload)
 

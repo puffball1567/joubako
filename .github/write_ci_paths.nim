@@ -12,6 +12,7 @@ const dependencyPaths = [
   "_deps/faststreams",
   "_deps/serialization",
   "_deps/cbor_serialization",
+  "_deps/protobuf_serialization",
   "_deps/npeg/src",
 ]
 
