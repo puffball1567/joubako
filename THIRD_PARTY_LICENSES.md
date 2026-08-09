@@ -316,6 +316,19 @@ earlier in this file.
 Joubako uses nim-cbor-serialization for RFC 8949 encoding and bounded parsing
 and elects the Apache License 2.0 terms reproduced earlier in this file.
 
+## Protocol Buffers serialization dependency
+
+### nim-protobuf-serialization
+
+- Version: 0.6.1 or later compatible release
+- Source: https://github.com/status-im/nim-protobuf-serialization
+- Copyright: Copyright (c) 2020-2026 Status Research & Development GmbH
+- License: Apache License 2.0 or MIT License, at the user's option
+
+Joubako uses nim-protobuf-serialization for schema-checked proto2, proto3, and
+Edition binary encoding, decoding, and compile-time `.proto` type generation.
+Joubako elects the Apache License 2.0 terms reproduced earlier in this file.
+
 ## Nim package-resolution dependencies
 
 The following packages are direct or transitive dependencies resolved by
