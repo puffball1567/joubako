@@ -25,6 +25,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | Cross-platform CI | Complete | Linux, macOS, Windows; Nim 2.2.0 and stable; ARC and ORC |
 | Cross-container E2E | Complete | Clean ARC/ORC Nim/Joubako client container against independent backend and redirect containers; typed JSON, query/header fidelity, binary, gzip, chunked streaming, retry, cross-origin credential stripping, cookies, file upload/download, response limits, NIF/BIF, concurrency, and timeout |
 | Native allocation leak probe | Complete | Valgrind, ARC and ORC, `-d:useMalloc`, zero definite/indirect/possible loss across core, transport, codec, resilience, HTTP/2, and repeated GraphQL success/error paths |
+| Address safety | Complete | AddressSanitizer structured-input and lifecycle probes on Linux, macOS, and Windows with ARC and ORC; LeakSanitizer enabled on Linux and explicitly disabled where unsupported on macOS/Windows |
 | Memory model | Complete | Public failures settle into values; project builds, tests, and runs leak probes with ARC and ORC |
 | Hardening | Complete | Scripted fault transport, deterministic structured-input fuzzing, mixed retry/codec/cookie soak test, and dedicated fault-path Valgrind coverage |
 

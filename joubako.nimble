@@ -115,6 +115,31 @@ task fuzz, "Run deterministic structured-input fuzzing":
 task fuzzOrc, "Run deterministic structured-input fuzzing with ORC":
   exec "nim c -d:release -r --mm:orc --path:src --nimcache:" & temporary("joubako-orc-fuzz-nimcache") & " --out:" & temporary("joubako-orc-fuzz-inputs") & " tests/fuzz_inputs.nim"
 
+const asanPrograms = [
+  ("structured-inputs", "tests/fuzz_inputs.nim"),
+  ("async-file-lifecycle", "tests/result_leak_probe.nim"),
+]
+
+proc runAsanSuite(memoryManager: string) =
+  let compilerFlag =
+    if hostOS == "windows": " --cc:clang"
+    else: ""
+  let sanitizerFlags =
+    compilerFlag & " --passC:-fsanitize=address" &
+    " --passL:-fsanitize=address --passC:-fno-omit-frame-pointer"
+  for (name, source) in asanPrograms:
+    let stem = "joubako-" & memoryManager & "-asan-" & name
+    exec "nim c -d:release -r --mm:" & memoryManager &
+      sanitizerFlags & " --path:src --nimcache:" &
+      temporary(stem & "-nimcache") & " --out:" & temporary(stem) &
+      " " & source
+
+task asan, "Run ARC memory-safety probes under AddressSanitizer":
+  runAsanSuite("arc")
+
+task asanOrc, "Run ORC memory-safety probes under AddressSanitizer":
+  runAsanSuite("orc")
+
 task soak, "Run the long mixed success/failure lifecycle probe":
   exec "nim c -d:release -r --mm:arc --path:src --nimcache:" & temporary("joubako-soak-nimcache") & " --out:" & temporary("joubako-soak-probe") & " tests/soak_probe.nim"
 
