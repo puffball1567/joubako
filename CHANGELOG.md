@@ -19,6 +19,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   verified subprotocol negotiation, connection parameters, extensions,
   ping/pong, bounded messages, cancellation, typed streamed results, terminal
   GraphQL errors, and explicit completion.
+- Validated resumable file downloads using Range, Content-Range, identity
+  encoding, and optional If-Range validators, with offset-aware progress.
+
+### Fixed
+
+- File streaming helpers now disable internal transport retry so a failure
+  after bytes reach disk cannot duplicate the same response bytes.
 
 ## [0.1.1] - 2026-08-03
 

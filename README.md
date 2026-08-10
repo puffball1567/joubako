@@ -944,6 +944,25 @@ if outcome.isErr:
   echo outcome.error.msg
 ```
 
+Resume an existing partial file with a validated byte-range response. Preserve
+the original response's ETag or Last-Modified value and pass it as `ifRange`
+to prevent bytes from different revisions being combined:
+
+```nim
+let resumed = await api.resumeDownloadToFile(
+  "exports/current",
+  "/var/tmp/current-export.bin",
+  ifRange = "\"export-revision-42\""
+)
+```
+
+Joubako appends only after the peer returns HTTP `206`, identity encoding, and
+a `Content-Range` beginning at the current file size. An ignored Range,
+changed representation returned as `200`, malformed range, or transformed
+body fails without modifying the existing partial file. File downloads use a
+single transport attempt because retrying after streamed bytes have reached a
+file can duplicate data; call `resumeDownloadToFile` again to continue safely.
+
 Automatic redirects are handled by Joubako. `Authorization`, `Cookie`,
 `Proxy-Authorization`, and `Host` are removed whenever a redirect changes
 scheme, host, or effective port. Every redirect target is checked against the
