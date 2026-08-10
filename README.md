@@ -1313,9 +1313,10 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asan
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asanOrc
 ```
 
-CI runs these probes with an AddressSanitizer-capable native compiler on
-Linux, macOS, and Windows. LeakSanitizer is enabled only on Linux. The macOS
-and Windows jobs explicitly use
+CI runs these probes with GCC ASan on Linux and Clang ASan on macOS and
+Windows; the Windows build explicitly passes Nim's `--cc:clang` and does not
+use MSVC ASan. LeakSanitizer is enabled only on Linux. The macOS and Windows
+jobs explicitly use
 `ASAN_OPTIONS=detect_leaks=0`; they still fail on AddressSanitizer findings
 such as out-of-bounds access, use-after-free, and double-free. Valgrind remains
 the separate Linux allocation-leak gate.

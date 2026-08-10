@@ -46,7 +46,8 @@ nimble benchmarkNetworkOrc
 
 Run AddressSanitizer with leak detection on Linux. CI runs the same ARC and
 ORC probes on macOS and Windows with `detect_leaks=0` because LeakSanitizer is
-not part of those platform gates:
+not part of those platform gates. Windows uses Clang ASan via `--cc:clang`,
+not MSVC ASan:
 
 ```sh
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asan
