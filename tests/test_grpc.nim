@@ -85,7 +85,7 @@ suite "gRPC framing":
       check completed.isErr
       check completed.error.codecCode == "grpc_truncated_frame"
 
-  test "invalid and compressed flags are rejected":
+  test "invalid flags and compressed frames without negotiation are rejected":
     let invalid = tryDecodeGrpcFrames(
       "\x02\x00\x00\x00\x00", EchoMessage
     )
@@ -95,7 +95,85 @@ suite "gRPC framing":
       "\x01\x00\x00\x00\x00", EchoMessage
     )
     check compressed.isErr
-    check compressed.error.codecCode == "grpc_compression_unsupported"
+    check compressed.error.codecCode == "grpc_compression_missing_encoding"
+
+  test "gzip frames round trip across every incremental split point":
+    let value = EchoMessage(
+      id: 77, text: repeat("compressible-", 128), payload: @[0'u8, 255]
+    )
+    var options = defaultGrpcOptions()
+    options.requestEncoding = geGzip
+    let frame = encodeGrpcFrame(value, options)
+    check frame[0] == '\1'
+    check frame.len < encodeGrpcFrame(value).len
+    for split in 0 .. frame.len:
+      let decoder = newGrpcFrameDecoder(
+        EchoMessage, options, encoding = geGzip
+      )
+      var messages: seq[EchoMessage]
+      let first = decoder.feed(frame[0 ..< split])
+      check first.isOk
+      if first.isOk:
+        messages.add first.value
+      let second = decoder.feed(frame[split ..< frame.len])
+      check second.isOk
+      if second.isOk:
+        messages.add second.value
+      check decoder.finish().isOk
+      check messages == @[value]
+
+  test "one gzip stream may mix compressed and uncompressed messages":
+    let plain = EchoMessage(id: 1, text: "plain")
+    let compressed = EchoMessage(id: 2, text: repeat("gzip-", 64))
+    var options = defaultGrpcOptions()
+    options.requestEncoding = geGzip
+    let decoded = tryDecodeGrpcFrames(
+      encodeGrpcFrame(plain) & encodeGrpcFrame(compressed, options),
+      EchoMessage,
+      options,
+      encoding = geGzip
+    )
+    check decoded.isOk
+    if decoded.isOk:
+      check decoded.value == @[plain, compressed]
+
+  test "gzip supports empty messages and bounds wire and expanded sizes":
+    var options = defaultGrpcOptions()
+    options.requestEncoding = geGzip
+    let emptyFrame = encodeGrpcFrame(EchoMessage(), options)
+    check decodeGrpcFrames(
+      emptyFrame, EchoMessage, options, encoding = geGzip
+    ) == @[EchoMessage()]
+
+    options.maxFrameBytes = emptyFrame.len - 6
+    let wireBound = tryEncodeGrpcFrame(EchoMessage(), options)
+    check wireBound.isErr
+    check wireBound.error.codecCode == "grpc_frame_too_large"
+
+    var expandedOptions = defaultGrpcOptions()
+    expandedOptions.requestEncoding = geGzip
+    let expandedFrame = encodeGrpcFrame(
+      EchoMessage(text: repeat('x', 64 * 1024)), expandedOptions
+    )
+    expandedOptions.maxMessageBytes = 1024
+    let expanded = tryDecodeGrpcFrames(
+      expandedFrame, EchoMessage, expandedOptions, encoding = geGzip
+    )
+    check expanded.isErr
+    check expanded.error.codecCode == "grpc_message_too_large"
+    check expanded.error.kind == jeBodyTooLarge
+
+  test "corrupt gzip frames are structured compression errors":
+    var options = defaultGrpcOptions()
+    options.requestEncoding = geGzip
+    var frame = encodeGrpcFrame(EchoMessage(text: "checksum"), options)
+    frame[^1] = char(ord(frame[^1]) xor 0xff)
+    let corrupt = tryDecodeGrpcFrames(
+      frame, EchoMessage, options, encoding = geGzip
+    )
+    check corrupt.isErr
+    check corrupt.error.kind == jeCompression
+    check corrupt.error.codecCode == "grpc_decompression_failed"
 
   test "declared message limits fail before a body is present":
     var options = defaultGrpcOptions()
@@ -105,6 +183,12 @@ suite "gRPC framing":
     )
     check outcome.isErr
     check outcome.error.codecCode == "grpc_message_too_large"
+    options.maxFrameBytes = 3
+    let compressed = tryDecodeGrpcFrames(
+      "\x01\x00\x00\x00\x04", EchoMessage, options, encoding = geGzip
+    )
+    check compressed.isErr
+    check compressed.error.codecCode == "grpc_frame_too_large"
 
   test "encoded message limits include exact boundaries":
     let value = EchoMessage(text: "bounded")
@@ -179,6 +263,50 @@ suite "gRPC names deadlines and metadata":
     check decoded.error.codecCode == "grpc_invalid_binary_metadata"
 
 suite "gRPC protocol validation":
+  test "request and response gzip negotiation is strict":
+    var gzipOptions = defaultGrpcOptions()
+    gzipOptions.requestEncoding = geGzip
+    let value = EchoMessage(id: 81, text: repeat("gzip", 32))
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      check request.headers.get("grpc-encoding") == "gzip"
+      check request.headers.get("grpc-accept-encoding") ==
+        (if geGzip in gzipOptions.acceptedEncodings:
+          "identity,gzip"
+        else:
+          "identity")
+      var response = grpcResponse(
+        request, encodeGrpcFrame(value, gzipOptions)
+      )
+      response.headers.set("grpc-encoding", "gzip")
+      return response
+    let accepted = waitFor newClient(newInProcessTransport(handler)).grpcUnary(
+      service, "Unary", value, EchoMessage, grpcOptions = gzipOptions
+    )
+    check accepted.isOk
+    if accepted.isOk:
+      check accepted.value == value
+
+    gzipOptions.acceptedEncodings = {geIdentity}
+    let rejected = waitFor newClient(newInProcessTransport(handler)).grpcUnary(
+      service, "Unary", value, EchoMessage, grpcOptions = gzipOptions
+    )
+    check rejected.isErr
+    check rejected.error.codecCode == "grpc_encoding_not_accepted"
+
+  test "unknown and duplicate response encodings fail closed":
+    for encodings in [@["br"], @["gzip", "gzip"], @["gzip,br"]]:
+      let handler = proc(request: Request): Future[Response] {.async.} =
+        var response = grpcResponse(
+          request, encodeGrpcFrame(EchoMessage())
+        )
+        for encoding in encodings:
+          response.headers.add("grpc-encoding", encoding)
+        return response
+      let outcome = unaryOutcome(handler)
+      check outcome.isErr
+      check outcome.error.codecCode in [
+        "grpc_encoding_unsupported", "grpc_duplicate_encoding"
+      ]
   test "trailers-only failures are accepted without a message body":
     let handler = proc(request: Request): Future[Response] {.async.} =
       var response = grpcResponse(
@@ -300,6 +428,83 @@ suite "gRPC protocol validation":
     check outcome.error.response.trailers.get("grpc-status") == "14"
 
 suite "gRPC over real HTTP/2":
+  test "gzip messages interoperate with Node zlib over real HTTP/2":
+    let transport = newHttp2Transport(allowH2c = true)
+    let client = newClient(transport, h2Base)
+    var options = defaultGrpcOptions()
+    options.requestEncoding = geGzip
+    let value = EchoMessage(
+      id: 909,
+      text: repeat("native-gzip-", 256),
+      payload: @[0'u8, 1, 2, 255]
+    )
+    let outcome = waitFor client.grpcUnary(
+      service, "CompressedUnary", value, EchoMessage,
+      grpcOptions = options
+    )
+    check outcome.isOk
+    if outcome.isOk:
+      check outcome.value == value
+    waitFor transport.close()
+
+  test "gzip is shared by server client and bidirectional streams":
+    let transport = newHttp2Transport(allowH2c = true)
+    let client = newClient(transport, h2Base)
+    var options = defaultGrpcOptions()
+    options.requestEncoding = geGzip
+
+    let serverValue = EchoMessage(id: 301, text: repeat("server-", 64))
+    var serverReceived: seq[EchoMessage]
+    let receiveServer = proc(message: EchoMessage) =
+      serverReceived.add message
+    let serverResult = waitFor client.grpcServerStream(
+      service,
+      "Stream",
+      serverValue,
+      EchoMessage,
+      receiveServer,
+      grpcOptions = options
+    )
+    check serverResult.isOk
+    check serverReceived == @[serverValue, serverValue]
+
+    let clientStream = client.openGrpcClientStream(
+      service, "ClientStream", EchoMessage, EchoMessage,
+      grpcOptions = options,
+      maxBufferedBytes = 13
+    )
+    for index in 1 .. 8:
+      check (waitFor clientStream.send(EchoMessage(
+        id: index.uint32, text: repeat("client-", index)
+      ))).isOk
+    let clientResult = waitFor clientStream.finish()
+    check clientResult.isOk
+    if clientResult.isOk:
+      check clientResult.value.message == EchoMessage(
+        id: 8, text: repeat("client-", 8)
+      )
+
+    var bidiReceived: seq[EchoMessage]
+    let receive = proc(message: EchoMessage): Future[void] {.async.} =
+      await sleepAsync(1)
+      bidiReceived.add message
+    let bidi = client.openGrpcBidiStream(
+      service, "Bidi", EchoMessage, EchoMessage, receive,
+      grpcOptions = options,
+      maxBufferedBytes = 15
+    )
+    for index in 1 .. 6:
+      check (waitFor bidi.send(EchoMessage(
+        id: index.uint32, text: repeat("bidi-", 32)
+      ))).isOk
+    let bidiResult = waitFor bidi.finish()
+    check bidiResult.isOk
+    check bidiReceived.len == 6
+    for index, message in bidiReceived:
+      check message.id == (index + 1).uint32
+      check message.text == repeat("bidi-", 32)
+    waitFor transport.close()
+
   test "client streaming sends many framed messages and receives one reply":
     let transport = newHttp2Transport(allowH2c = true)
     let client = newClient(transport, h2Base)

@@ -6,6 +6,7 @@
 ## completion trailers, metadata, and status mapping.
 
 import std/[asyncdispatch, base64, strutils]
+import zlib/zlib_api
 import ./[client, protobufcodec, result, types, uploadstream]
 
 const
@@ -13,6 +14,10 @@ const
   GrpcBaseMediaType* = "application/grpc"
 
 type
+  GrpcMessageEncoding* = enum
+    geIdentity,
+    geGzip
+
   GrpcStatusCode* = enum
     gsOk = 0,
     gsCancelled = 1,
@@ -35,12 +40,21 @@ type
   GrpcOptions* = object
     ## Maximum decoded Protobuf bytes in one gRPC message.
     maxMessageBytes*: int
+    ## Maximum compressed bytes in one wire frame. The decoded message is
+    ## independently bounded by `maxMessageBytes`.
+    maxFrameBytes*: int
     ## Maximum messages accepted in one response stream.
     maxResponseMessages*: int
     ## Require the transport to report negotiated HTTP/2.
     requireHttp2*: bool
     ## Require application/grpc or application/grpc+proto on responses.
     requireContentType*: bool
+    ## Compression used for outbound messages. Identity leaves the compressed
+    ## frame bit clear and omits grpc-encoding.
+    requestEncoding*: GrpcMessageEncoding
+    ## Encodings accepted for compressed response messages. Identity is always
+    ## accepted because an individual response frame may remain uncompressed.
+    acceptedEncodings*: set[GrpcMessageEncoding]
 
   GrpcCompletion* = object
     code*: GrpcStatusCode
@@ -58,11 +72,13 @@ type
   GrpcFrameDecoder*[T] = ref object
     buffer: string
     maxMessageBytes: int
+    maxFrameBytes: int
     maxMessages: int
     messagesSeen: int
     url: string
     status: int
     failed: bool
+    encoding: GrpcMessageEncoding
 
   GrpcMessageProc*[T] = proc(message: T): Future[void] {.closure.}
 
@@ -88,9 +104,12 @@ type
 func defaultGrpcOptions*(): GrpcOptions =
   GrpcOptions(
     maxMessageBytes: 16 * 1024 * 1024,
+    maxFrameBytes: 16 * 1024 * 1024,
     maxResponseMessages: 65_536,
     requireHttp2: true,
-    requireContentType: true
+    requireContentType: true,
+    requestEncoding: geIdentity,
+    acceptedEncodings: {geIdentity, geGzip}
   )
 
 proc grpcError(
@@ -203,6 +222,144 @@ proc decodeGrpcBinaryMetadata*(
       "invalid Base64 gRPC metadata: " & error.msg
     ))
 
+func wireName(encoding: GrpcMessageEncoding): string =
+  case encoding
+  of geIdentity: "identity"
+  of geGzip: "gzip"
+
+proc gzipMessage(
+    payload: string;
+    url: string
+): JResult[string] =
+  var stream = ZStream(
+    next_in:
+      if payload.len == 0: nil
+      else: cast[ptr uint8](payload[0].unsafeAddr),
+    avail_in: payload.len.cuint
+  )
+  let initialized = stream.deflateInit2(
+    Z_DEFAULT_LEVEL,
+    Z_DEFLATED,
+    cast[ZWindowBits](31),
+    Z_DEFAULT_MEM_LEVEL,
+    Z_DEFAULT_STRATEGY
+  )
+  if initialized != Z_OK:
+    return err[string](grpcError(
+      "grpc_compression_init",
+      "failed to initialize gzip message compression: " & $initialized,
+      url,
+      kind = jeCompression
+    ))
+  defer: discard stream.deflateEnd()
+
+  var output: array[16 * 1024, char]
+  var compressed: string
+  while true:
+    stream.next_out = cast[ptr uint8](output[0].addr)
+    stream.avail_out = output.len.cuint
+    let status = stream.deflate(Z_FINISH)
+    let produced = output.len - stream.avail_out.int
+    if produced > 0:
+      let previous = compressed.len
+      compressed.setLen(previous + produced)
+      copyMem(compressed[previous].addr, output[0].addr, produced)
+    if status == Z_STREAM_END:
+      return ok(move(compressed))
+    if status != Z_OK:
+      return err[string](grpcError(
+        "grpc_compression_failed",
+        "failed to gzip a gRPC message: " & $status,
+        url,
+        kind = jeCompression
+      ))
+
+proc gunzipMessage(
+    payload: string;
+    limit: int;
+    url: string;
+    httpStatus: int
+): JResult[string] =
+  var stream = ZStream(
+    next_in:
+      if payload.len == 0: nil
+      else: cast[ptr uint8](payload[0].unsafeAddr),
+    avail_in: payload.len.cuint
+  )
+  let initialized = stream.inflateInit2(cast[ZWindowBits](31))
+  if initialized != Z_OK:
+    return err[string](grpcError(
+      "grpc_decompression_init",
+      "failed to initialize gzip message decompression: " & $initialized,
+      url,
+      httpStatus,
+      jeCompression
+    ))
+  defer: discard stream.inflateEnd()
+
+  var output: array[16 * 1024, char]
+  var decoded: string
+  while true:
+    let remaining =
+      if limit < 0: output.len
+      else: max(0, limit - decoded.len)
+    let capacity =
+      if limit < 0 or remaining >= output.len: output.len
+      else: remaining + 1
+    stream.next_out = cast[ptr uint8](output[0].addr)
+    stream.avail_out = capacity.cuint
+    let inputBefore = stream.avail_in
+    let status = stream.inflate(Z_NO_FLUSH)
+    let produced = capacity - stream.avail_out.int
+    if limit >= 0 and produced > remaining:
+      return err[string](grpcError(
+        "grpc_message_too_large",
+        "decompressed gRPC message exceeds the configured limit",
+        url,
+        httpStatus,
+        jeBodyTooLarge
+      ))
+    if produced > 0:
+      let previous = decoded.len
+      decoded.setLen(previous + produced)
+      copyMem(decoded[previous].addr, output[0].addr, produced)
+    case status
+    of Z_STREAM_END:
+      if stream.avail_in != 0:
+        return err[string](grpcError(
+          "grpc_compressed_trailing_data",
+          "compressed gRPC message contains trailing data",
+          url,
+          httpStatus,
+          jeCompression
+        ))
+      return ok(move(decoded))
+    of Z_OK:
+      if stream.avail_in == inputBefore and produced == 0:
+        return err[string](grpcError(
+          "grpc_decompression_stalled",
+          "gzip gRPC message decoder made no progress",
+          url,
+          httpStatus,
+          jeCompression
+        ))
+    of Z_BUF_ERROR:
+      return err[string](grpcError(
+        "grpc_compressed_truncated",
+        "compressed gRPC message ended before the gzip stream completed",
+        url,
+        httpStatus,
+        jeCompression
+      ))
+    else:
+      return err[string](grpcError(
+        "grpc_decompression_failed",
+        "invalid gzip gRPC message: " & $status,
+        url,
+        httpStatus,
+        jeCompression
+      ))
+
 proc tryEncodeGrpcFrame*[T](
     value: T;
     options = defaultGrpcOptions();
@@ -227,15 +384,36 @@ proc tryEncodeGrpcFrame*[T](
       "encoded gRPC message exceeds the 32-bit framing limit",
       url
     ))
-  let length = encoded.value.len.uint32
-  var frame = newString(5 + encoded.value.len)
-  frame[0] = '\0'
+  var wirePayload = encoded.value
+  var compressed = false
+  if options.requestEncoding == geGzip:
+    let gzip = gzipMessage(wirePayload, url)
+    if gzip.isErr:
+      return err[string](gzip.error)
+    wirePayload = gzip.value
+    compressed = true
+  if options.maxFrameBytes >= 0 and wirePayload.len > options.maxFrameBytes:
+    return err[string](grpcError(
+      "grpc_frame_too_large",
+      "encoded gRPC frame payload is " & $wirePayload.len &
+        " bytes; limit is " & $options.maxFrameBytes,
+      url
+    ))
+  if wirePayload.len.uint64 > uint32.high.uint64:
+    return err[string](grpcError(
+      "grpc_frame_too_large",
+      "encoded gRPC frame exceeds the 32-bit framing limit",
+      url
+    ))
+  let length = wirePayload.len.uint32
+  var frame = newString(5 + wirePayload.len)
+  frame[0] = if compressed: '\1' else: '\0'
   frame[1] = char((length shr 24) and 0xff)
   frame[2] = char((length shr 16) and 0xff)
   frame[3] = char((length shr 8) and 0xff)
   frame[4] = char(length and 0xff)
-  if encoded.value.len > 0:
-    copyMem(frame[5].addr, encoded.value[0].unsafeAddr, encoded.value.len)
+  if wirePayload.len > 0:
+    copyMem(frame[5].addr, wirePayload[0].unsafeAddr, wirePayload.len)
   ok(move(frame))
 
 proc encodeGrpcFrame*[T](
@@ -252,13 +430,16 @@ proc newGrpcFrameDecoder*[T](
     _: typedesc[T];
     options = defaultGrpcOptions();
     url = "";
-    status = 0
+    status = 0;
+    encoding = geIdentity
 ): GrpcFrameDecoder[T] =
   GrpcFrameDecoder[T](
     maxMessageBytes: options.maxMessageBytes,
+    maxFrameBytes: options.maxFrameBytes,
     maxMessages: options.maxResponseMessages,
     url: url,
-    status: status
+    status: status,
+    encoding: encoding
   )
 
 proc feed*[T](
@@ -287,13 +468,16 @@ proc feed*[T](
       (uint32(ord(decoder.buffer[consumed + 2])) shl 16) or
       (uint32(ord(decoder.buffer[consumed + 3])) shl 8) or
       uint32(ord(decoder.buffer[consumed + 4]))
-    if decoder.maxMessageBytes >= 0 and
-        messageLength.uint64 > decoder.maxMessageBytes.uint64:
+    let declaredLimit =
+      if flag == 0: decoder.maxMessageBytes
+      else: decoder.maxFrameBytes
+    if declaredLimit >= 0 and
+        messageLength.uint64 > declaredLimit.uint64:
       decoder.failed = true
       return err[seq[T]](grpcError(
-        "grpc_message_too_large",
+        if flag == 0: "grpc_message_too_large" else: "grpc_frame_too_large",
         "gRPC frame declares " & $messageLength &
-          " bytes; limit is " & $decoder.maxMessageBytes,
+          " bytes; limit is " & $declaredLimit,
         decoder.url,
         decoder.status
       ))
@@ -308,14 +492,6 @@ proc feed*[T](
     let frameLength = 5 + messageLength.int
     if decoder.buffer.len - consumed < frameLength:
       break
-    if flag == 1:
-      decoder.failed = true
-      return err[seq[T]](grpcError(
-        "grpc_compression_unsupported",
-        "compressed gRPC messages are not enabled",
-        decoder.url,
-        decoder.status
-      ))
     if decoder.maxMessages >= 0 and
         decoder.messagesSeen >= decoder.maxMessages:
       decoder.failed = true
@@ -326,7 +502,30 @@ proc feed*[T](
         decoder.status
       ))
     let start = consumed + 5
-    let payload = decoder.buffer[start ..< start + messageLength.int]
+    var payload = decoder.buffer[start ..< start + messageLength.int]
+    if flag == 1:
+      if decoder.encoding == geIdentity:
+        decoder.failed = true
+        return err[seq[T]](grpcError(
+          "grpc_compression_missing_encoding",
+          "compressed gRPC frame has no negotiated message encoding",
+          decoder.url,
+          decoder.status
+        ))
+      case decoder.encoding
+      of geIdentity:
+        discard
+      of geGzip:
+        let decoded = gunzipMessage(
+          payload,
+          decoder.maxMessageBytes,
+          decoder.url,
+          decoder.status
+        )
+        if decoded.isErr:
+          decoder.failed = true
+          return err[seq[T]](decoded.error)
+        payload = decoded.value
     var protobufOptions = defaultProtobufCodecOptions()
     protobufOptions.maxPayloadBytes = -1
     let decoded = tryDecodeProtobufPayload(
@@ -366,9 +565,10 @@ proc tryDecodeGrpcFrames*[T](
     _: typedesc[T];
     options = defaultGrpcOptions();
     url = "";
-    status = 0
+    status = 0;
+    encoding = geIdentity
 ): JResult[seq[T]] =
-  let decoder = newGrpcFrameDecoder(T, options, url, status)
+  let decoder = newGrpcFrameDecoder(T, options, url, status, encoding)
   let decoded = decoder.feed(payload)
   if decoded.isErr:
     return decoded
@@ -382,9 +582,10 @@ proc decodeGrpcFrames*[T](
     _: typedesc[T];
     options = defaultGrpcOptions();
     url = "";
-    status = 0
+    status = 0;
+    encoding = geIdentity
 ): seq[T] =
-  let decoded = tryDecodeGrpcFrames(payload, T, options, url, status)
+  let decoded = tryDecodeGrpcFrames(payload, T, options, url, status, encoding)
   if decoded.isErr:
     raise decoded.error
   decoded.value
@@ -443,6 +644,45 @@ proc validateGrpcResponse(
       response.status
     ))
   ok()
+
+proc responseMessageEncoding(
+    headers: Headers;
+    options: GrpcOptions;
+    url: string;
+    status: int
+): JResult[GrpcMessageEncoding] =
+  let values = headers.getAll("grpc-encoding")
+  if values.len == 0:
+    return ok(geIdentity)
+  if values.len != 1 or values[0].contains(','):
+    return err[GrpcMessageEncoding](grpcError(
+      "grpc_duplicate_encoding",
+      "gRPC response must contain at most one message encoding",
+      url,
+      status
+    ))
+  let name = values[0].strip.toLowerAscii
+  let encoding =
+    case name
+    of "identity": geIdentity
+    of "gzip": geGzip
+    else:
+      return err[GrpcMessageEncoding](grpcError(
+        "grpc_encoding_unsupported",
+        "unsupported gRPC message encoding: " & name,
+        url,
+        status,
+        jeCompression
+      ))
+  if encoding != geIdentity and encoding notin options.acceptedEncodings:
+    return err[GrpcMessageEncoding](grpcError(
+      "grpc_encoding_not_accepted",
+      "server selected an unadvertised gRPC message encoding: " & name,
+      url,
+      status,
+      jeCompression
+    ))
+  ok(encoding)
 
 proc decodeStatusDetails(value: string): string =
   if value.len == 0:
@@ -539,15 +779,22 @@ proc grpcStatusError(
 proc prepareGrpcHeaders(
     client: Client;
     headers: Headers;
-    options: RequestOptions
+    options: RequestOptions;
+    grpcOptions: GrpcOptions
 ): Headers =
   result = headers
   result.set("content-type", GrpcMediaType)
   if not result.contains("accept"):
     result.set("accept", GrpcMediaType)
   result.set("te", "trailers")
-  if not result.contains("grpc-accept-encoding"):
-    result.set("grpc-accept-encoding", "identity")
+  if grpcOptions.requestEncoding == geIdentity:
+    result.del("grpc-encoding")
+  else:
+    result.set("grpc-encoding", grpcOptions.requestEncoding.wireName)
+  var accepted = @["identity"]
+  if geGzip in grpcOptions.acceptedEncodings:
+    accepted.add "gzip"
+  result.set("grpc-accept-encoding", accepted.join(","))
   let timeout =
     if options.timeoutMs != 0: options.timeoutMs
     elif client != nil: client.defaultOptions.timeoutMs
@@ -573,6 +820,12 @@ proc streamHeadersCallback[T](
     let valid = validateGrpcResponse(preview, context.options)
     if valid.isErr:
       raise valid.error
+    let encoding = responseMessageEncoding(
+      responseHeaders, context.options, context.path, status
+    )
+    if encoding.isErr:
+      raise encoding.error
+    context.decoder.encoding = encoding.value
 
 proc streamChunkCallback[T](
     context: GrpcStreamContext[T]
@@ -606,7 +859,7 @@ proc grpcUnaryCall*[TRequest, TResponse](
   let response = await client.post(
     path,
     encoded.value,
-    prepareGrpcHeaders(client, headers, options),
+    prepareGrpcHeaders(client, headers, options, grpcOptions),
     options
   )
   if response.isErr:
@@ -615,6 +868,15 @@ proc grpcUnaryCall*[TRequest, TResponse](
   if valid.isErr:
     valid.error.attachResponse(response.value)
     return err[GrpcResponse[TResponse]](valid.error)
+  let responseEncoding = responseMessageEncoding(
+    response.value.headers,
+    grpcOptions,
+    response.value.request.url,
+    response.value.status
+  )
+  if responseEncoding.isErr:
+    responseEncoding.error.attachResponse(response.value)
+    return err[GrpcResponse[TResponse]](responseEncoding.error)
   let completion = grpcCompletion(response.value)
   if completion.isErr:
     completion.error.attachResponse(response.value)
@@ -628,7 +890,8 @@ proc grpcUnaryCall*[TRequest, TResponse](
     TResponse,
     grpcOptions,
     response.value.request.url,
-    response.value.status
+    response.value.status,
+    responseEncoding.value
   )
   if decoded.isErr:
     decoded.error.attachResponse(response.value)
@@ -706,7 +969,7 @@ proc grpcServerStream*[TRequest, TResponse](
   let response = await client.post(
     path,
     encoded.value,
-    prepareGrpcHeaders(client, headers, options),
+    prepareGrpcHeaders(client, headers, options, grpcOptions),
     streamOptions
   )
   if response.isErr:
@@ -778,7 +1041,7 @@ proc openGrpcClientStream*[TRequest, TResponse](
   result.upload = client.openUpload(
     rmPost,
     path,
-    prepareGrpcHeaders(client, headers, options),
+    prepareGrpcHeaders(client, headers, options, grpcOptions),
     options,
     maxBufferedBytes
   )
@@ -810,6 +1073,15 @@ proc finish*[TRequest, TResponse](
   if valid.isErr:
     valid.error.attachResponse(response.value)
     return err[GrpcResponse[TResponse]](valid.error)
+  let responseEncoding = responseMessageEncoding(
+    response.value.headers,
+    stream.options,
+    response.value.request.url,
+    response.value.status
+  )
+  if responseEncoding.isErr:
+    responseEncoding.error.attachResponse(response.value)
+    return err[GrpcResponse[TResponse]](responseEncoding.error)
   let completion = grpcCompletion(response.value)
   if completion.isErr:
     completion.error.attachResponse(response.value)
@@ -820,7 +1092,7 @@ proc finish*[TRequest, TResponse](
     ))
   let decoded = tryDecodeGrpcFrames(
     response.value.body, TResponse, stream.options,
-    response.value.request.url, response.value.status
+    response.value.request.url, response.value.status, responseEncoding.value
   )
   if decoded.isErr:
     decoded.error.attachResponse(response.value)
@@ -882,7 +1154,7 @@ proc openGrpcBidiStream*[TRequest, TResponse](
   result.upload = client.openUpload(
     rmPost,
     path,
-    prepareGrpcHeaders(client, headers, options),
+    prepareGrpcHeaders(client, headers, options, grpcOptions),
     streamOptions,
     maxBufferedBytes
   )

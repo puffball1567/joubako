@@ -80,10 +80,16 @@ proc fuzzProtobuf(payload: string) =
 proc fuzzGrpc(payload: string) =
   var options = defaultGrpcOptions()
   options.maxMessageBytes = 512
+  options.maxFrameBytes = 512
   options.maxResponseMessages = 32
   let decoded = tryDecodeGrpcFrames(payload, FuzzProtobuf, options)
   if decoded.isErr:
     doAssert decoded.error.kind == jeCodec
+  let compressed = tryDecodeGrpcFrames(
+    payload, FuzzProtobuf, options, encoding = geGzip
+  )
+  if compressed.isErr:
+    doAssert compressed.error.kind in {jeCodec, jeCompression, jeBodyTooLarge}
 
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)

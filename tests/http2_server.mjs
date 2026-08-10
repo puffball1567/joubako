@@ -1,8 +1,29 @@
 import http2 from "node:http2";
+import { gzipSync, gunzipSync } from "node:zlib";
 
 const host = "127.0.0.1";
 const port = Number(process.env.JOUBAKO_HTTP2_PORT ?? 18942);
 const server = http2.createServer();
+
+function decodeSingleCompressedFrame(frame) {
+  if (frame.length < 5 || frame[0] !== 1) {
+    throw new Error("expected one compressed gRPC frame");
+  }
+  const length = frame.readUInt32BE(1);
+  if (frame.length !== length + 5) {
+    throw new Error("invalid compressed gRPC frame length");
+  }
+  return gunzipSync(frame.subarray(5));
+}
+
+function compressedFrame(payload) {
+  const compressed = gzipSync(payload);
+  const frame = Buffer.alloc(5 + compressed.length);
+  frame[0] = 1;
+  frame.writeUInt32BE(compressed.length, 1);
+  compressed.copy(frame, 5);
+  return frame;
+}
 
 server.on("stream", (stream, headers) => {
   // Client-side timeout and cancellation legitimately reset a stream.
@@ -18,8 +39,14 @@ server.on("stream", (stream, headers) => {
       stream.end();
       return;
     }
+    const responseHeaders = {
+      ":status": 200, "content-type": "application/grpc+proto"
+    };
+    if (headers["grpc-encoding"] === "gzip") {
+      responseHeaders["grpc-encoding"] = "gzip";
+    }
     stream.respond(
-      { ":status": 200, "content-type": "application/grpc+proto" },
+      responseHeaders,
       { waitForTrailers: true }
     );
     stream.on("data", chunk => stream.write(chunk));
@@ -40,9 +67,11 @@ server.on("stream", (stream, headers) => {
     const requestBytes = Buffer.concat(chunks);
     const requestBody = requestBytes.toString();
     const sendGrpc = (body, trailers = { "grpc-status": "0" },
-        contentType = "application/grpc+proto") => {
+        contentType = "application/grpc+proto", messageEncoding = "") => {
+      const responseHeaders = { ":status": 200, "content-type": contentType };
+      if (messageEncoding) responseHeaders["grpc-encoding"] = messageEncoding;
       stream.respond(
-        { ":status": 200, "content-type": contentType },
+        responseHeaders,
         { waitForTrailers: true }
       );
       stream.on("wantTrailers", () => stream.sendTrailers(trailers));
@@ -61,9 +90,36 @@ server.on("stream", (stream, headers) => {
       }
       return;
     }
+    if (path === "/joubako.test.Echo/CompressedUnary") {
+      if (method !== "POST" || headers["grpc-encoding"] !== "gzip" ||
+          !String(headers["grpc-accept-encoding"] ?? "").includes("gzip")) {
+        sendGrpc(Buffer.alloc(0), {
+          "grpc-status": "3",
+          "grpc-message": "gzip%20negotiation%20required"
+        });
+        return;
+      }
+      try {
+        const protobuf = decodeSingleCompressedFrame(requestBytes);
+        sendGrpc(compressedFrame(protobuf), { "grpc-status": "0" },
+          "application/grpc+proto", "gzip");
+      } catch {
+        sendGrpc(Buffer.alloc(0), {
+          "grpc-status": "13",
+          "grpc-message": "invalid%20gzip%20frame"
+        });
+      }
+      return;
+    }
     if (path === "/joubako.test.Echo/Stream") {
+      const responseHeaders = {
+        ":status": 200, "content-type": "application/grpc+proto"
+      };
+      if (headers["grpc-encoding"] === "gzip") {
+        responseHeaders["grpc-encoding"] = "gzip";
+      }
       stream.respond(
-        { ":status": 200, "content-type": "application/grpc+proto" },
+        responseHeaders,
         { waitForTrailers: true }
       );
       stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
@@ -83,7 +139,9 @@ server.on("stream", (stream, headers) => {
         lastFrame = requestBytes.subarray(offset, end);
         offset = end;
       }
-      sendGrpc(lastFrame);
+      sendGrpc(lastFrame, { "grpc-status": "0" },
+        "application/grpc+proto",
+        headers["grpc-encoding"] === "gzip" ? "gzip" : "");
       return;
     }
     if (path === "/joubako.test.Echo/Failure") {

@@ -10,6 +10,8 @@ const Iterations = 2_000
 proc handler(request: Request): Future[Response] {.async.} =
   var headers = initHeaders()
   headers.set("content-type", GrpcMediaType)
+  if request.headers.get("grpc-encoding") == "gzip":
+    headers.set("grpc-encoding", "gzip")
   var trailers = initHeaders()
   if request.url.endsWith("/Failure"):
     trailers.set("grpc-status", "14")
@@ -41,6 +43,15 @@ proc exercise(client: Client; iteration: int): Future[void] {.async.} =
   )
   doAssert unary.isOk
   doAssert unary.value == value
+
+  var gzipOptions = defaultGrpcOptions()
+  gzipOptions.requestEncoding = geGzip
+  let compressed = await client.grpcUnary(
+    "joubako.leak.Probe", "Unary", value, ProbeMessage,
+    grpcOptions = gzipOptions
+  )
+  doAssert compressed.isOk
+  doAssert compressed.value == value
 
   let failure = await client.grpcUnary(
     "joubako.leak.Probe", "Failure", value, ProbeMessage
