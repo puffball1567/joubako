@@ -1327,20 +1327,22 @@ detection, and real multi-threaded codec access:
 ```sh
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 nimble ubsan
 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 nimble ubsanOrc
-LSAN_OPTIONS=exitcode=99 nimble lsan
-LSAN_OPTIONS=exitcode=99 nimble lsanOrc
+LSAN_OPTIONS=detect_leaks=1:exitcode=99 nimble lsan
+LSAN_OPTIONS=detect_leaks=1:exitcode=99 nimble lsanOrc
 TSAN_OPTIONS=halt_on_error=1:exitcode=99 nimble tsan
 TSAN_OPTIONS=halt_on_error=1:exitcode=99 nimble tsanOrc
 ```
 
-UBSan, standalone LSan, and TSan run on Linux and macOS. The TSan probe starts four native threads that
-repeatedly encode and decode independent CBOR, Protobuf, and gRPC values while
-exercising synchronized shared completion state. LSan and TSan are
-intentionally absent from Windows CI because those runtimes are not supported
-there. Windows UBSan is also excluded because the LLVM runtime does not link
+UBSan and TSan run on Linux and macOS; standalone LSan runs on Linux. The TSan
+probe starts four native threads that repeatedly encode and decode independent
+CBOR, Protobuf, and gRPC values while exercising synchronized shared completion
+state. Windows UBSan is excluded because the LLVM runtime does not link
 reliably with the Windows Nim toolchain; full tests, type checks, and Clang ASan
-remain mandatory there. macOS ASan still uses `detect_leaks=0`; leak checking
-there belongs to the separate standalone LSan executable. See the
+remain mandatory there. macOS and Windows ASan use `detect_leaks=0`; no leak
+result is claimed on those platforms. Standalone LSan is excluded because the
+macOS arm64 CI image's Apple Clang rejects `-fsanitize=leak`. Linux combines
+integrated ASan leak detection, standalone LSan, and repeated Valgrind probes.
+See the
 [sanitizer support matrix](docs/sanitizer-support.md) for the platform rationale
 and substitute gates.
 

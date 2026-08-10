@@ -161,8 +161,8 @@ task ubsanOrc, "Run ORC probes under UndefinedBehaviorSanitizer":
   runUbsanSuite("orc")
 
 proc runLsanSuite(memoryManager: string) =
-  if hostOS notin ["linux", "macosx"]:
-    quit "standalone LeakSanitizer is supported only on Linux and macOS"
+  if hostOS != "linux":
+    quit "standalone LeakSanitizer is maintained only on Linux; the macOS arm64 CI Apple Clang rejects -fsanitize=leak and Windows lacks a supported runtime"
   let stem = "joubako-" & memoryManager & "-lsan-lifecycle"
   exec "nim c -d:release -r --mm:" & memoryManager &
     " --cc:clang --passC:-fsanitize=leak --passL:-fsanitize=leak" &
