@@ -264,6 +264,14 @@ suite "HTTP/2 transport":
     check response.body == ""
     waitFor transport.close()
 
+  test "keeps HTTP/2 trailers separate from initial headers":
+    let transport = newHttp2Transport(allowH2c = true)
+    let response = waitFor transport.send(request("/trailers"))
+    check response.headers.get("x-initial") == "header"
+    check not response.headers.contains("x-final")
+    check response.trailers.get("x-final") == "trailer"
+    waitFor transport.close()
+
   test "follows bounded relative redirects":
     let transport = newHttp2Transport(allowH2c = true)
     let response = waitFor transport.send(request("/redirect"))

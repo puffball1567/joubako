@@ -74,6 +74,7 @@ type
     mime: pointer
     errorBuffer: string
     responseHeaders: Headers
+    responseTrailers: Headers
     status: int
     statusText: string
     protocol: string
@@ -290,9 +291,14 @@ proc headerCallback(
     else:
       let separator = line.find(':')
       if separator > 0:
-        state.responseHeaders.add(
-          line[0 ..< separator], line[separator + 1 .. ^1].strip
-        )
+        if state.headersDelivered:
+          state.responseTrailers.add(
+            line[0 ..< separator], line[separator + 1 .. ^1].strip
+          )
+        else:
+          state.responseHeaders.add(
+            line[0 ..< separator], line[separator + 1 .. ^1].strip
+          )
     if state.error != nil: 0 else: byteCount
   except CatchableError as error:
     state.rememberError(error.asJoubakoError(jeTransport, state.request.url))
@@ -421,6 +427,7 @@ proc finishTransfer(
       statusText: state.statusText,
       httpVersion: "HTTP/2",
       headers: state.responseHeaders,
+      trailers: state.responseTrailers,
       body: move(state.body),
       request: state.request,
       attempts: 1
@@ -847,6 +854,7 @@ proc exchange(
     done: newFuture[CurlOutcome]("Joubako.Http2Transport.exchange"),
     errorBuffer: newString(ERROR_SIZE),
     responseHeaders: initHeaders(),
+    responseTrailers: initHeaders(),
     total: -1,
     startedAt: now,
     lastActivityAt: now

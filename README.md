@@ -27,9 +27,9 @@ and in-process calls.
 - **Keep memory behavior predictable.** Joubako is tested with ARC and ORC and
   hammered under Valgrind on success and failure paths under both models.
 - **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, CBOR, Protocol
-  Buffers, pluggable codecs, NIF/BIF, typed GraphQL, multipart uploads,
-  WebSockets, Unix-domain IPC, and in-process transports all speak the same
-  request, result, cancellation, and deadline language.
+  Buffers, native gRPC, pluggable codecs, NIF/BIF, typed GraphQL, multipart
+  uploads, WebSockets, Unix-domain IPC, and in-process transports all speak
+  the same request, result, cancellation, and deadline language.
 
 From a single GET to a resilient native service client, Joubako keeps the code
 clear and the network under control.
@@ -176,6 +176,8 @@ The current implementation includes:
   parsing;
 - typed Protocol Buffers binary requests and responses with compile-time
   `.proto` schema generation and strict media-type validation;
+- native gRPC unary calls and backpressured server streams over HTTP/2, with
+  completion trailers, deadlines, metadata, and structured status errors;
 - typed GraphQL query, mutation, subscription, variable, directive, and
   fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
@@ -545,6 +547,54 @@ message; concatenated messages are interpreted using Protobuf's normal merge
 semantics. See the official
 [Protobuf overview](https://protobuf.dev/overview/) and
 [MIME type rules](https://protobuf.dev/reference/protobuf/mime-types/).
+
+## gRPC
+
+Call a Protobuf service directly through Joubako's multiplexed HTTP/2
+transport. The service and method become the canonical `/Service/Method` path:
+
+```nim
+let transport = newHttp2Transport()
+let api = newClient(transport, "https://api.example.com")
+
+let reply = await api.grpcUnary(
+  "example.v1.Greeter",
+  "SayHello",
+  HelloRequest(name: "Nim"),
+  HelloReply
+)
+```
+
+Use `grpcUnaryCall` when successful response headers, completion trailers, or
+the parsed completion status are needed alongside the decoded message.
+
+Server streams use an awaited handler, so downstream work applies
+backpressure instead of accumulating decoded messages:
+
+```nim
+let completed = await api.grpcServerStream(
+  "example.v1.Events",
+  "Watch",
+  WatchRequest(topic: "releases"),
+  Event,
+  proc(event: Event): Future[void] {.async.} =
+    await persist(event)
+)
+```
+
+Joubako emits the standard five-byte gRPC message envelope,
+`application/grpc+proto`, `te: trailers`, and a deadline-derived
+`grpc-timeout`. It validates negotiated HTTP/2, final `grpc-status`, message
+counts and sizes, response media types, percent-encoded status messages, and
+binary metadata. Non-OK statuses remain structured as `jeRpcStatus`, with
+`grpcStatus`, `grpcMessage`, `grpcDetails`, and final metadata available from
+the error.
+
+Unary and server-streaming RPCs are supported. True incremental client and
+bidirectional streaming require an upload-streaming transport API and are not
+claimed by this release. Message compression is rejected explicitly until its
+per-message negotiation path is implemented. See the official
+[gRPC over HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
 
 ## GraphQL
 
