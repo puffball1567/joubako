@@ -644,8 +644,27 @@ binary metadata. Non-OK statuses remain structured as `jeRpcStatus`, with
 the error.
 
 Unary, client-streaming, server-streaming, and bidirectional RPCs are
-supported. Message compression is rejected explicitly until its per-message
-negotiation path is implemented. See the official
+supported. Per-message gzip compression is negotiated independently from HTTP
+content encoding and works with every call shape:
+
+```nim
+var grpcOptions = defaultGrpcOptions()
+grpcOptions.requestEncoding = geGzip
+grpcOptions.acceptedEncodings = {geIdentity, geGzip}
+
+let reply = await api.grpcUnary(
+  "example.v1.Greeter",
+  "SayHello",
+  HelloRequest(name: "Nim"),
+  HelloReply,
+  grpcOptions = grpcOptions
+)
+```
+
+`maxFrameBytes` bounds compressed wire bytes before buffering a complete
+message, while `maxMessageBytes` bounds the expanded Protobuf payload during
+decompression. Unknown, duplicate, unadvertised, corrupt, truncated, and
+trailing-data encodings fail as structured errors. See the official
 [gRPC over HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
 
 ## GraphQL
