@@ -141,6 +141,7 @@ jobs:
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/core_bench.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/network_bench.nim
+          nim check --threads:on --mm:${{ matrix.memory-manager }} --path:src tests/tsan_probe.nim
 
       - name: Run ARC tests with Nim 2.2 Nimble
         if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'arc'
@@ -201,6 +202,46 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           JOUBAKO_FUZZ_ITERATIONS: 2000
         run: nimble --legacy --offline asanOrc
+
+      - name: Run Linux and macOS ARC UndefinedBehaviorSanitizer probes
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          JOUBAKO_FUZZ_ITERATIONS: 1000
+        run: nimble --legacy --offline ubsan
+
+      - name: Run Linux and macOS ORC UndefinedBehaviorSanitizer probes
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          JOUBAKO_FUZZ_ITERATIONS: 1000
+        run: nimble --legacy --offline ubsanOrc
+
+      - name: Run Linux and macOS ARC standalone LeakSanitizer probe
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          LSAN_OPTIONS: exitcode=99
+        run: nimble --legacy --offline lsan
+
+      - name: Run Linux and macOS ORC standalone LeakSanitizer probe
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          LSAN_OPTIONS: exitcode=99
+        run: nimble --legacy --offline lsanOrc
+
+      - name: Run Linux and macOS ARC ThreadSanitizer probe
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=99
+          JOUBAKO_THREAD_ITERATIONS: 500
+        run: nimble --legacy --offline tsan
+
+      - name: Run Linux and macOS ORC ThreadSanitizer probe
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=99
+          JOUBAKO_THREAD_ITERATIONS: 500
+        run: nimble --legacy --offline tsanOrc
 
       - name: Run ARC hardening fuzz and soak probes
         if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'

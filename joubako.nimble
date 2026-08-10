@@ -141,6 +141,57 @@ task asan, "Run ARC memory-safety probes under AddressSanitizer":
 task asanOrc, "Run ORC memory-safety probes under AddressSanitizer":
   runAsanSuite("orc")
 
+proc runUbsanSuite(memoryManager: string) =
+  if hostOS == "windows":
+    quit "UBSan is disabled on Windows because the LLVM runtime does not link reliably with this Nim toolchain"
+  let flags =
+    " --cc:clang --passC:-fsanitize=undefined --passL:-fsanitize=undefined" &
+    " --passC:-fno-sanitize-recover=undefined" &
+    " --passC:-fno-omit-frame-pointer"
+  for (name, source) in asanPrograms:
+    let stem = "joubako-" & memoryManager & "-ubsan-" & name
+    exec "nim c -d:release -r --mm:" & memoryManager & flags &
+      " --path:src --nimcache:" & temporary(stem & "-nimcache") &
+      " --out:" & temporary(stem) & " " & source
+
+task ubsan, "Run ARC probes under UndefinedBehaviorSanitizer":
+  runUbsanSuite("arc")
+
+task ubsanOrc, "Run ORC probes under UndefinedBehaviorSanitizer":
+  runUbsanSuite("orc")
+
+proc runLsanSuite(memoryManager: string) =
+  if hostOS notin ["linux", "macosx"]:
+    quit "standalone LeakSanitizer is supported only on Linux and macOS"
+  let stem = "joubako-" & memoryManager & "-lsan-lifecycle"
+  exec "nim c -d:release -r --mm:" & memoryManager &
+    " --cc:clang --passC:-fsanitize=leak --passL:-fsanitize=leak" &
+    " --passC:-fno-omit-frame-pointer --path:src --nimcache:" &
+    temporary(stem & "-nimcache") & " --out:" & temporary(stem) &
+    " tests/result_leak_probe.nim"
+
+task lsan, "Run ARC lifecycle probes under standalone LeakSanitizer":
+  runLsanSuite("arc")
+
+task lsanOrc, "Run ORC lifecycle probes under standalone LeakSanitizer":
+  runLsanSuite("orc")
+
+proc runTsanSuite(memoryManager: string) =
+  if hostOS == "windows":
+    quit "ThreadSanitizer is not supported on Windows"
+  let stem = "joubako-" & memoryManager & "-tsan"
+  exec "nim c -d:release -r --threads:on --mm:" & memoryManager &
+    " --cc:clang --passC:-fsanitize=thread --passL:-fsanitize=thread" &
+    " --passC:-fno-omit-frame-pointer --path:src --nimcache:" &
+    temporary(stem & "-nimcache") & " --out:" & temporary(stem) &
+    " tests/tsan_probe.nim"
+
+task tsan, "Run ARC concurrent codec probes under ThreadSanitizer":
+  runTsanSuite("arc")
+
+task tsanOrc, "Run ORC concurrent codec probes under ThreadSanitizer":
+  runTsanSuite("orc")
+
 task soak, "Run the long mixed success/failure lifecycle probe":
   exec "nim c -d:release -r --mm:arc --path:src --nimcache:" & temporary("joubako-soak-nimcache") & " --out:" & temporary("joubako-soak-probe") & " tests/soak_probe.nim"
 

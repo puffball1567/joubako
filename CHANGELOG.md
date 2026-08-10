@@ -24,6 +24,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Cross-platform AddressSanitizer CI for ARC and ORC on Linux, macOS,
   and Windows, with Windows explicitly using Clang ASan and LeakSanitizer
   enabled only on Linux.
+- UndefinedBehaviorSanitizer, standalone LeakSanitizer, and multi-threaded
+  ThreadSanitizer probes on Linux and macOS, all covering ARC and ORC; Windows
+  uses full tests, type checks, and Clang AddressSanitizer in place of its
+  incompatible UBSan runtime.
 
 ### Fixed
 
