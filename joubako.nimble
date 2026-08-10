@@ -87,6 +87,27 @@ task testSslOrc, "Run TLS, mTLS, and SOCKS5h integration tests with ORC":
 task benchmark, "Build and run local core benchmarks":
   exec "nim c -d:release -r --path:src --nimcache:" & temporary("joubako-benchmark-nimcache") & " --out:" & temporary("joubako-core-benchmark") & " benchmarks/core_bench.nim"
 
+proc runNetworkBenchmark(memoryManager: string) =
+  when defined(windows):
+    echo "benchmarkNetwork currently requires a POSIX host and Node.js"
+  else:
+    let stem = "joubako-" & memoryManager & "-network-benchmark"
+    let runner = temporary(stem & "-runner")
+    let benchmark = temporary(stem)
+    exec "nim c --mm:" & memoryManager & " --nimcache:" &
+      temporary(stem & "-runner-nimcache") &
+      " --out:" & runner & " tests/run_http2_test.nim"
+    exec "nim c -d:release --mm:" & memoryManager &
+      " --path:src --nimcache:" & temporary(stem & "-nimcache") &
+      " --out:" & benchmark & " benchmarks/network_bench.nim"
+    exec runner & " " & benchmark
+
+task benchmarkNetwork, "Run reproducible HTTP/2 and gRPC loopback benchmarks":
+  runNetworkBenchmark("arc")
+
+task benchmarkNetworkOrc, "Run reproducible HTTP/2 and gRPC loopback benchmarks with ORC":
+  runNetworkBenchmark("orc")
+
 task fuzz, "Run deterministic structured-input fuzzing":
   exec "nim c -d:release -r --mm:arc --path:src --nimcache:" & temporary("joubako-fuzz-nimcache") & " --out:" & temporary("joubako-fuzz-inputs") & " tests/fuzz_inputs.nim"
 

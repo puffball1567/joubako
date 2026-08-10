@@ -1289,11 +1289,34 @@ HTTP failures.
 
 ```sh
 nimble benchmark
+nimble benchmarkNetwork
+nimble benchmarkNetworkOrc
 ```
 
 The local benchmark reports request construction/dispatch, typed JSON decode,
 Promise callback dispatch, and one-failure retry overhead separately from
-network latency.
+network latency. `benchmarkNetwork` starts the same local Node.js HTTP/2 peer
+used by the interoperability tests and separately measures sequential HTTP/2,
+multiplexed concurrent HTTP/2, bounded streaming upload throughput, unary
+gRPC, and gzip-compressed unary gRPC. It requires Node.js and an HTTP/2-capable
+system libcurl and never contacts the public network. The ARC and ORC tasks
+run the same workload.
+
+The network workload can be scaled and emitted as JSON Lines for repeatable
+release measurements:
+
+```sh
+JOUBAKO_NETWORK_BENCH_ITERATIONS=1000 \
+JOUBAKO_NETWORK_BENCH_CONCURRENCY=64 \
+JOUBAKO_NETWORK_BENCH_UPLOAD_BYTES=4194304 \
+JOUBAKO_NETWORK_BENCH_FORMAT=jsonl \
+nimble benchmarkNetwork
+```
+
+Network benchmark results are descriptive measurements of the current host,
+not pass/fail thresholds. The HTTP/2 and gRPC integration suites remain the
+correctness gate. A checked-in [reference ARC/ORC run](docs/network-benchmark.md)
+documents the exact workload and host environment.
 
 ## License
 

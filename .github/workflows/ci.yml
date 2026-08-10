@@ -140,6 +140,7 @@ jobs:
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/basic.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/core_bench.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/network_bench.nim
 
       - name: Run ARC tests with Nim 2.2 Nimble
         if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'arc'
