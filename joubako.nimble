@@ -47,6 +47,7 @@ const testPrograms = [
   ("json-stream", "tests/test_jsonstream.nim"),
   ("cbor-codec", "tests/test_cborcodec.nim"),
   ("protobuf-codec", "tests/test_protobufcodec.nim"),
+  ("upload-stream", "tests/test_uploadstream.nim"),
 ]
 
 proc runTestSuite(memoryManager: string) =

@@ -1,5 +1,5 @@
 import std/[asyncdispatch, monotimes, os, strutils, times, unittest]
-import joubako/[client, cookiejar, multipart, result, types]
+import joubako/[client, cookiejar, multipart, result, types, uploadstream]
 import joubako/transports/http2
 
 const
@@ -34,6 +34,93 @@ proc errorKind(pending: Future[Response]): ErrorKind =
     result = error.kind
 
 suite "HTTP/2 transport":
+  test "streams a request body in order through a bounded producer queue":
+    let transport = newHttp2Transport(allowH2c = true)
+    let api = newClient(transport, h2Base)
+    let upload = api.openUpload(
+      rmPost, "/upload-stream", maxBufferedBytes = 7
+    )
+    check (waitFor upload.send("alpha-")).isOk
+    check (waitFor upload.send(repeat("0123456789", 4096))).isOk
+    check (waitFor upload.send("-omega")).isOk
+    let outcome = waitFor upload.finish()
+    check outcome.isOk
+    if outcome.isOk:
+      check outcome.value.httpVersion == "HTTP/2"
+      check outcome.value.body ==
+        "POST:alpha-" & repeat("0123456789", 4096) & "-omega"
+      check outcome.value.request.uploadSource == nil
+    check upload.acceptedBytes == (40 * 1024 + 12).int64
+    check upload.queuedBytes == 0
+    waitFor transport.close()
+
+  test "applies asynchronous backpressure when the upload queue is full":
+    let transport = newHttp2Transport(allowH2c = true)
+    let upload = newClient(transport, h2Base).openUpload(
+      rmPost, "/slow-upload", maxBufferedBytes = 8
+    )
+    let sending = upload.send(repeat('b', 4 * 1024))
+    check not sending.finished
+    let sent = waitFor sending
+    check sent.isOk
+    let outcome = waitFor upload.finish()
+    check outcome.isOk
+    check upload.queuedBytes == 0
+    waitFor transport.close()
+
+  test "rejects oversized streaming input and wakes the transport":
+    let transport = newHttp2Transport(allowH2c = true)
+    var opts = options()
+    opts.maxRequestBytes = 5
+    let upload = newClient(transport, h2Base).openUpload(
+      rmPut, "/upload-stream", options = opts, maxBufferedBytes = 2
+    )
+    let sent = waitFor upload.send("123456")
+    check sent.isErr
+    check sent.error.kind == jeBodyTooLarge
+    let outcome = waitFor upload.finish()
+    check outcome.isErr
+    check outcome.error.kind in {jeBodyTooLarge, jeStream}
+    waitFor transport.close()
+
+  test "cancels a blocked streaming producer without hanging":
+    let transport = newHttp2Transport(allowH2c = true)
+    let upload = newClient(transport, h2Base).openUpload(
+      rmPost, "/slow-upload", maxBufferedBytes = 8
+    )
+    let sending = upload.send(repeat('c', 512 * 1024))
+    upload.cancel("stop streaming upload")
+    let sent = waitFor sending
+    check sent.isErr
+    check sent.error.kind == jeCancelled
+    let outcome = waitFor upload.finish()
+    check outcome.isErr
+    check outcome.error.kind in {jeCancelled, jeStream}
+    waitFor transport.close()
+
+  test "does not replay a consumed upload across redirects":
+    let transport = newHttp2Transport(allowH2c = true)
+    let upload = newClient(transport, h2Base).openUpload(
+      rmPost, "/upload-redirect", maxBufferedBytes = 16
+    )
+    check (waitFor upload.send("single-use")).isOk
+    let outcome = waitFor upload.finish()
+    check outcome.isErr
+    check outcome.error.kind == jeTransport
+    waitFor transport.close()
+
+  test "rejects retry policy for a non-replayable upload source":
+    let transport = newHttp2Transport(allowH2c = true)
+    var opts = options()
+    opts.retry.maxAttempts = 2
+    let upload = newClient(transport, h2Base).openUpload(
+      rmPost, "/upload-stream", options = opts
+    )
+    let outcome = waitFor upload.finish()
+    check outcome.isErr
+    check outcome.error.kind == jeInvalidRequest
+    waitFor transport.close()
+
   test "rejects h2c unless explicitly enabled":
     let transport = newHttp2Transport()
     check errorKind(transport.send(request("/"))) == jeInvalidRequest

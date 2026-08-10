@@ -11,6 +11,25 @@ server.on("stream", (stream, headers) => {
   const path = headers[":path"];
   const chunks = [];
 
+  if (path === "/joubako.test.Echo/Bidi") {
+    if (method !== "POST" || headers.te !== "trailers" ||
+        headers["content-type"] !== "application/grpc+proto") {
+      stream.respond({ ":status": 400 });
+      stream.end();
+      return;
+    }
+    stream.respond(
+      { ":status": 200, "content-type": "application/grpc+proto" },
+      { waitForTrailers: true }
+    );
+    stream.on("data", chunk => stream.write(chunk));
+    stream.on("wantTrailers", () => stream.sendTrailers({
+      "grpc-status": "0", "x-bidi-finished": "yes"
+    }));
+    stream.on("end", () => stream.end());
+    return;
+  }
+
   if (path === "/slow-upload") {
     stream.pause();
     setTimeout(() => stream.resume(), 120);
@@ -52,6 +71,19 @@ server.on("stream", (stream, headers) => {
       stream.write(requestBytes.subarray(0, split));
       stream.write(requestBytes.subarray(split));
       stream.end(requestBytes);
+      return;
+    }
+    if (path === "/joubako.test.Echo/ClientStream") {
+      let offset = 0;
+      let lastFrame = Buffer.alloc(0);
+      while (offset + 5 <= requestBytes.length) {
+        const length = requestBytes.readUInt32BE(offset + 1);
+        const end = offset + 5 + length;
+        if (end > requestBytes.length) break;
+        lastFrame = requestBytes.subarray(offset, end);
+        offset = end;
+      }
+      sendGrpc(lastFrame);
       return;
     }
     if (path === "/joubako.test.Echo/Failure") {
@@ -129,6 +161,11 @@ server.on("stream", (stream, headers) => {
       stream.end();
       return;
     }
+    if (path === "/upload-redirect") {
+      stream.respond({ ":status": 307, location: "/upload-stream" });
+      stream.end();
+      return;
+    }
     if (path === "/set-cookie") {
       stream.respond({
         ":status": 302,
@@ -138,7 +175,7 @@ server.on("stream", (stream, headers) => {
       stream.end();
       return;
     }
-    const body = path === "/echo"
+    const body = path === "/echo" || path === "/upload-stream"
       ? `${method}:${requestBody}`
       : path === "/multipart"
         ? `${headers["content-type"]}\n${requestBody}`

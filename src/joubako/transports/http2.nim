@@ -32,6 +32,8 @@ const
   CurlPauseReceive = 1
   CurlPauseContinue = 0
   CurlErrorTimeout = 28
+  CurlReadAbort = 0x10000000.csize_t
+  CurlReadPause = 0x10000001.csize_t
 
 proc rawEasySetopt(handle: PCurl; option: cint): Code {.
   cdecl, varargs, dynlib: CurlLibrary, importc: "curl_easy_setopt".}
@@ -95,6 +97,8 @@ type
     startedAt: MonoTime
     lastActivityAt: MonoTime
     lastUploaded: int64
+    uploadReadBytes: int64
+    uploadPaused: bool
     cleaned: bool
 
   Http2Transport* = ref object of Transport
@@ -367,6 +371,62 @@ proc progressCallback(
         return 1
   0
 
+proc uploadCallback(
+    buffer: pointer;
+    size, itemCount: csize_t;
+    userdata: pointer
+): csize_t {.cdecl.} =
+  let state = cast[CurlTransfer](userdata)
+  if state == nil or state.request.uploadSource == nil:
+    return CurlReadAbort
+  if size != 0 and itemCount > high(csize_t) div size:
+    state.rememberError(newJoubakoError(
+      jeStream, "HTTP/2 upload buffer size overflow", state.request.url
+    ))
+    return CurlReadAbort
+  let capacity = size * itemCount
+  if capacity > high(int).csize_t:
+    state.rememberError(newJoubakoError(
+      jeStream, "HTTP/2 upload buffer exceeds platform limits", state.request.url
+    ))
+    return CurlReadAbort
+  try:
+    let count = state.request.uploadSource.read(buffer, capacity.int)
+    case count
+    of UploadReadPause:
+      state.uploadPaused = true
+      return CurlReadPause
+    of UploadReadAbort:
+      state.rememberError(newJoubakoError(
+        jeStream, "HTTP/2 upload producer aborted", state.request.url
+      ))
+      return CurlReadAbort
+    of UploadReadEof:
+      return 0
+    else:
+      if count < 0 or count > capacity.int:
+        state.rememberError(newJoubakoError(
+          jeStream, "HTTP/2 upload producer returned an invalid byte count",
+          state.request.url
+        ))
+        return CurlReadAbort
+      if state.request.options.maxRequestBytes >= 0 and
+          (state.uploadReadBytes > state.request.options.maxRequestBytes.int64 or
+           count.int64 > state.request.options.maxRequestBytes.int64 -
+             state.uploadReadBytes):
+        state.rememberError(newJoubakoError(
+          jeBodyTooLarge,
+          "HTTP/2 streaming upload exceeded the configured limit",
+          state.request.url
+        ))
+        return CurlReadAbort
+      state.uploadReadBytes += count.int64
+      state.lastActivityAt = getMonoTime()
+      return count.csize_t
+  except CatchableError as error:
+    state.rememberError(error.asJoubakoError(jeStream, state.request.url))
+    return CurlReadAbort
+
 proc deliverChunk(state: CurlTransfer; chunk: string): Future[void] {.async.} =
   if state.request.options.maxResponseBytes >= 0 and
       (state.received > state.request.options.maxResponseBytes or
@@ -399,6 +459,12 @@ proc cleanupTransfer(state: CurlTransfer) =
   if state == nil or state.cleaned:
     return
   state.cleaned = true
+  if state.request.uploadSource != nil and
+      state.request.uploadSource.setWake != nil:
+    try:
+      state.request.uploadSource.setWake(nil)
+    except CatchableError:
+      discard
   if state.easy != nil:
     discard multi_remove_handle(state.transport.multi, state.easy)
     state.transport.transfers.del(cast[uint](state.easy))
@@ -793,7 +859,27 @@ proc configureTransfer(state: CurlTransfer; url: Uri) =
     )
   if state.request.httpMethod == rmHead:
     state.checkedSetopt(cint(OPT_NOBODY), 1.clong)
-  if state.request.multipartParts.len > 0:
+  if state.request.uploadSource != nil:
+    if state.request.httpMethod == rmHead:
+      raise newJoubakoError(
+        jeInvalidRequest, "HEAD requests cannot stream an upload", state.request.url
+      )
+    state.checkedSetopt(cint(OPT_UPLOAD), 1.clong)
+    state.checkedSetopt(cint(OPT_READFUNCTION), uploadCallback)
+    state.checkedSetopt(cint(OPT_READDATA), cast[pointer](state))
+    let source = state.request.uploadSource
+    source.setWake(proc() =
+      if not state.cleaned and state.easy != nil and state.uploadPaused:
+        state.uploadPaused = false
+        let resumed = rawEasyPause(state.easy, CurlPauseContinue)
+        if resumed != E_OK:
+          state.rememberError(newJoubakoError(
+            jeTransport,
+            "failed to resume HTTP/2 upload: " & $easy_strerror(resumed),
+            state.request.url
+          ))
+    )
+  elif state.request.multipartParts.len > 0:
     state.configureMultipart()
   elif state.request.body.len > 0:
     state.checkedSetopt(
@@ -808,7 +894,8 @@ proc configureTransfer(state: CurlTransfer; url: Uri) =
     let normalized = name.toLowerAscii
     if normalized.forbiddenHttp2Header:
       continue
-    if state.request.multipartParts.len > 0 and normalized == "content-length":
+    if (state.request.multipartParts.len > 0 or
+        state.request.uploadSource != nil) and normalized == "content-length":
       continue
     if normalized == "te" and value.strip.toLowerAscii != "trailers":
       continue
@@ -928,6 +1015,13 @@ proc redirectingExchange(
           not response.headers.contains("location"):
         response.request = request
         return CurlOutcome(response: move(response))
+      if request.uploadSource != nil:
+        return CurlOutcome(error: newJoubakoError(
+          jeTransport,
+          "HTTP/2 streaming uploads cannot follow redirects because the body is not replayable",
+          hop.url,
+          response.status
+        ))
       if transport.maxRedirects == 0:
         response.request = request
         return CurlOutcome(response: move(response))

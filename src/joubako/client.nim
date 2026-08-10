@@ -203,7 +203,8 @@ proc requestResult(
     body = "";
     headers = initHeaders();
     options: RequestOptions = RequestOptions();
-    multipartParts: seq[MultipartPart] = @[]
+    multipartParts: seq[MultipartPart] = @[];
+    uploadSource: UploadSource = nil
 ): Future[JResult[Response]] {.async.} =
   if client == nil or client.transport == nil:
     return err[Response](newJoubakoError(
@@ -256,6 +257,7 @@ proc requestResult(
     headers: mergedHeaders,
     body: body,
     multipartParts: multipartParts,
+    uploadSource: uploadSource,
     options: effectiveOptions
   )
 
@@ -293,6 +295,30 @@ proc requestResult(
       return err[Response](newJoubakoError(
         jeInvalidRequest,
         "request contains an invalid header",
+        request.url
+      ))
+
+  if request.uploadSource != nil:
+    if request.body.len > 0 or request.multipartParts.len > 0:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads cannot also contain a buffered or multipart body",
+        request.url
+      ))
+    if request.uploadSource.read.isNil or request.uploadSource.setWake.isNil:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest, "streaming upload source is incomplete", request.url
+      ))
+    if request.headers.contains("content-length"):
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads determine their length from end-of-stream",
+        request.url
+      ))
+    if request.options.retry.maxAttempts >= 2:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads cannot be retried because the body is not replayable",
         request.url
       ))
 
@@ -423,6 +449,9 @@ proc requestResult(
     var response = transportResult.value
 
     response.request = request
+    # A completed response must not retain the producer closures or queued
+    # upload chunks. The ordinary request metadata remains inspectable.
+    response.request.uploadSource = nil
 
     if request.options.cancellation != nil and
         request.options.cancellation.cancelled:
@@ -559,6 +588,7 @@ proc requestResult(
       return err[Response](interceptorResult.error)
     response = interceptorResult.value
     response.request = request
+    response.request.uploadSource = nil
     response.attempts = completedAttempts
 
   if request.options.maxResponseBytes >= 0 and
@@ -580,7 +610,8 @@ proc observedRequestResult(
     body = "";
     headers = initHeaders();
     options: RequestOptions = RequestOptions();
-    multipartParts: seq[MultipartPart] = @[]
+    multipartParts: seq[MultipartPart] = @[];
+    uploadSource: UploadSource = nil
 ): Future[JResult[Response]] {.async.} =
   var tracedHeaders = initHeaders()
   tracedHeaders.merge(headers)
@@ -606,7 +637,8 @@ proc observedRequestResult(
       body,
       tracedHeaders,
       options,
-      multipartParts
+      multipartParts,
+      uploadSource
     )),
     jeTransport,
     path
@@ -664,6 +696,28 @@ proc requestMultipart*(
       headers = headers,
       options = options,
       multipartParts = parts
+    )),
+    jeTransport,
+    path
+  )
+
+proc requestUploadSource*(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    source: UploadSource;
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions()
+): Future[JResult[Response]] =
+  ## Low-level entry point used by bounded upload producers. Most callers
+  ## should use `openUpload` from `joubako/uploadstream`.
+  settleResult(
+    fallible(client.observedRequestResult(
+      httpMethod,
+      path,
+      headers = headers,
+      options = options,
+      uploadSource = source
     )),
     jeTransport,
     path

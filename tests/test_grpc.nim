@@ -300,6 +300,55 @@ suite "gRPC protocol validation":
     check outcome.error.response.trailers.get("grpc-status") == "14"
 
 suite "gRPC over real HTTP/2":
+  test "client streaming sends many framed messages and receives one reply":
+    let transport = newHttp2Transport(allowH2c = true)
+    let client = newClient(transport, h2Base)
+    let stream = client.openGrpcClientStream(
+      service, "ClientStream", EchoMessage, EchoMessage,
+      maxBufferedBytes = 11
+    )
+    for index in 1 .. 32:
+      let sent = waitFor stream.send(EchoMessage(id: index.uint32, text: $index))
+      check sent.isOk
+    let outcome = waitFor stream.finish()
+    check outcome.isOk
+    if outcome.isOk:
+      check outcome.value.message == EchoMessage(id: 32, text: "32")
+      check outcome.value.completion.code == gsOk
+    waitFor transport.close()
+
+  test "bidirectional streaming receives messages before request completion":
+    let transport = newHttp2Transport(allowH2c = true)
+    let client = newClient(transport, h2Base)
+    var received: seq[EchoMessage]
+    let receive = proc(message: EchoMessage): Future[void] {.async.} =
+      await sleepAsync(1)
+      received.add message
+    let stream = client.openGrpcBidiStream(
+      service,
+      "Bidi",
+      EchoMessage,
+      EchoMessage,
+      receive,
+      maxBufferedBytes = 9
+    )
+    for index in 1 .. 12:
+      let sent = waitFor stream.send(EchoMessage(id: index.uint32, text: "bidi"))
+      check sent.isOk
+    for _ in 0 ..< 100:
+      if received.len > 0:
+        break
+      waitFor sleepAsync(2)
+    check received.len > 0
+    let completion = waitFor stream.finish()
+    check completion.isOk
+    if completion.isOk:
+      check completion.value.metadata.get("x-bidi-finished") == "yes"
+    check received.len == 12
+    for index, message in received:
+      check message == EchoMessage(id: (index + 1).uint32, text: "bidi")
+    waitFor transport.close()
+
   test "unary request negotiates HTTP/2 and validates final trailers":
     let transport = newHttp2Transport(allowH2c = true)
     let client = newClient(transport, h2Base)
