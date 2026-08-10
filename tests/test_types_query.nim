@@ -192,6 +192,7 @@ suite "Core types":
     check error.retryAfterMs == 2_000
     check not error.hasResponse
     check error.attempts == 0
+    check error.grpcStatus == -1
 
   test "new errors default to no Retry-After":
     check newJoubakoError(jeTransport, "offline").retryAfterMs == -1
@@ -199,6 +200,8 @@ suite "Core types":
   test "error response snapshots omit requests and copy headers":
     var headers = initHeaders()
     headers.add("x-value", "one")
+    var trailers = initHeaders()
+    trailers.add("x-final", "done")
     let request = Request(
       url: "https://example.test/private",
       body: "secret"
@@ -207,15 +210,18 @@ suite "Core types":
       status: 403,
       statusText: "Forbidden",
       headers: headers,
+      trailers: trailers,
       body: "denied",
       request: request
     )
     let snapshot = response.toErrorResponse()
     headers.set("x-value", "changed")
+    trailers.set("x-final", "changed")
 
     check snapshot.status == 403
     check snapshot.statusText == "Forbidden"
     check snapshot.headers.get("x-value") == "one"
+    check snapshot.trailers.get("x-final") == "done"
     check snapshot.body == "denied"
 
 suite "Query serialization":

@@ -77,6 +77,14 @@ proc fuzzProtobuf(payload: string) =
   if decoded.isErr:
     doAssert decoded.error.kind == jeCodec
 
+proc fuzzGrpc(payload: string) =
+  var options = defaultGrpcOptions()
+  options.maxMessageBytes = 512
+  options.maxResponseMessages = 32
+  let decoded = tryDecodeGrpcFrames(payload, FuzzProtobuf, options)
+  if decoded.isErr:
+    doAssert decoded.error.kind == jeCodec
+
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)
   let iterations = getEnv("JOUBAKO_FUZZ_ITERATIONS", "10000").parseInt
@@ -102,6 +110,7 @@ proc main(): Future[void] {.async.} =
     fuzzJsonStreams(payload)
     fuzzCbor(payload)
     fuzzProtobuf(payload)
+    fuzzGrpc(payload)
     if index mod 10 == 0:
       await fuzzCompression(payload)
 

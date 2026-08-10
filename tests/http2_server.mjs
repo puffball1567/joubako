@@ -18,7 +18,54 @@ server.on("stream", (stream, headers) => {
 
   stream.on("data", chunk => chunks.push(chunk));
   stream.on("end", () => {
-    const requestBody = Buffer.concat(chunks).toString();
+    const requestBytes = Buffer.concat(chunks);
+    const requestBody = requestBytes.toString();
+    const sendGrpc = (body, trailers = { "grpc-status": "0" },
+        contentType = "application/grpc+proto") => {
+      stream.respond(
+        { ":status": 200, "content-type": contentType },
+        { waitForTrailers: true }
+      );
+      stream.on("wantTrailers", () => stream.sendTrailers(trailers));
+      stream.end(body);
+    };
+    if (path === "/joubako.test.Echo/Unary") {
+      if (method !== "POST" || headers.te !== "trailers" ||
+          headers["content-type"] !== "application/grpc+proto" ||
+          !headers["grpc-timeout"]) {
+        sendGrpc(Buffer.alloc(0), {
+          "grpc-status": "3",
+          "grpc-message": "invalid%20request%20headers"
+        });
+      } else {
+        sendGrpc(requestBytes);
+      }
+      return;
+    }
+    if (path === "/joubako.test.Echo/Stream") {
+      stream.respond(
+        { ":status": 200, "content-type": "application/grpc+proto" },
+        { waitForTrailers: true }
+      );
+      stream.on("wantTrailers", () => stream.sendTrailers({ "grpc-status": "0" }));
+      const split = Math.min(2, requestBytes.length);
+      stream.write(requestBytes.subarray(0, split));
+      stream.write(requestBytes.subarray(split));
+      stream.end(requestBytes);
+      return;
+    }
+    if (path === "/joubako.test.Echo/Failure") {
+      sendGrpc(Buffer.alloc(0), {
+        "grpc-status": "14",
+        "grpc-message": "temporarily%20unavailable",
+        "grpc-status-details-bin": Buffer.from("details").toString("base64")
+      });
+      return;
+    }
+    if (path === "/joubako.test.Echo/MissingStatus") {
+      sendGrpc(requestBytes, { "x-finished": "yes" });
+      return;
+    }
     if (path === "/slow") {
       setTimeout(() => {
         if (stream.destroyed) return;
@@ -51,6 +98,15 @@ server.on("stream", (stream, headers) => {
     if (path === "/status") {
       stream.respond({ ":status": 418, "x-test": ["first", "second"] });
       stream.end();
+      return;
+    }
+    if (path === "/trailers") {
+      stream.respond(
+        { ":status": 200, "x-initial": "header" },
+        { waitForTrailers: true }
+      );
+      stream.on("wantTrailers", () => stream.sendTrailers({ "x-final": "trailer" }));
+      stream.end("body");
       return;
     }
     if (path === "/redirect") {

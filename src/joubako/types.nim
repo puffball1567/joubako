@@ -90,6 +90,10 @@ type
     ## `HTTP/1.1` or `HTTP/2`. Empty when a custom transport does not report it.
     httpVersion*: string
     headers*: Headers
+    ## Final response metadata delivered after the body. HTTP/2 transports
+    ## keep trailers separate from initial headers so streaming protocols such
+    ## as gRPC can validate completion status without header ambiguity.
+    trailers*: Headers
     body*: string
     request*: Request
     ## Number of transport attempts used by the logical request.
@@ -103,6 +107,7 @@ type
     status*: int
     statusText*: string
     headers*: Headers
+    trailers*: Headers
     body*: string
 
   ErrorKind* = enum
@@ -117,7 +122,8 @@ type
     jeStream,
     jeCircuitOpen,
     jeRateLimited,
-    jeBulkheadRejected
+    jeBulkheadRejected,
+    jeRpcStatus
 
   JoubakoError* = object of CatchableError
     kind*: ErrorKind
@@ -127,6 +133,10 @@ type
     ## `codecOffset` is -1 when the codec did not identify a byte position.
     codecCode*: string
     codecOffset*: int
+    ## gRPC status details. `grpcStatus` is -1 for non-gRPC errors.
+    grpcStatus*: int
+    grpcMessage*: string
+    grpcDetails*: string
     ## Parsed Retry-After delay in milliseconds, or -1 when absent/invalid.
     retryAfterMs*: int64
     ## True when `response` contains an HTTP response received from the peer.
@@ -192,6 +202,8 @@ proc toErrorResponse*(response: Response): ErrorResponse =
   result.statusText = response.statusText
   result.headers = initHeaders()
   result.headers.merge(response.headers)
+  result.trailers = initHeaders()
+  result.trailers.merge(response.trailers)
   result.body = response.body
 
 proc overlay*(target: var Headers; source: Headers) =
@@ -253,6 +265,7 @@ proc newJoubakoError*(
   result.status = status
   result.retryAfterMs = retryAfterMs
   result.codecOffset = -1
+  result.grpcStatus = -1
 
 proc attachResponse*(error: ref JoubakoError; response: Response) =
   ## Retains bounded peer response data without the originating Request.

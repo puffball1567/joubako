@@ -55,15 +55,21 @@ proc runTestSuite(memoryManager: string) =
     exec "nim c -r --mm:" & memoryManager & " --path:src --nimcache:" &
       temporary(stem & "-nimcache") & " --out:" & temporary(stem) & " " & source
   when not defined(windows):
-    let testBinary = temporary("joubako-" & memoryManager & "-http2")
     let runner = temporary("joubako-" & memoryManager & "-http2-runner")
-    exec "nim c --mm:" & memoryManager & " --path:src --nimcache:" &
-      temporary("joubako-" & memoryManager & "-http2-nimcache") &
-      " --out:" & testBinary & " tests/test_http2.nim"
     exec "nim c --mm:" & memoryManager & " --nimcache:" &
       temporary("joubako-" & memoryManager & "-http2-runner-nimcache") &
       " --out:" & runner & " tests/run_http2_test.nim"
-    exec runner & " " & testBinary
+    for (name, source) in [
+      ("http2", "tests/test_http2.nim"),
+      ("grpc", "tests/test_grpc.nim")
+    ]:
+      let testBinary = temporary(
+        "joubako-" & memoryManager & "-" & name
+      )
+      exec "nim c --mm:" & memoryManager & " --path:src --nimcache:" &
+        temporary("joubako-" & memoryManager & "-" & name & "-nimcache") &
+        " --out:" & testBinary & " " & source
+      exec runner & " " & testBinary
 
 task test, "Run the Joubako test suite with ARC":
   runTestSuite("arc")
@@ -148,6 +154,7 @@ const leakPrograms = [
   ("json-stream", "tests/jsonstream_leak_probe.nim", true),
   ("cbor-codec", "tests/cborcodec_leak_probe.nim", true),
   ("protobuf-codec", "tests/protobufcodec_leak_probe.nim", true),
+  ("grpc", "tests/grpc_leak_probe.nim", true),
 ]
 
 proc runLeakSuite(memoryManager: string) =
