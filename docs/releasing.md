@@ -40,6 +40,8 @@ nimble soakOrc
 nimble e2e
 nimble e2eOrc
 nimble benchmark
+nimble benchmarkNetwork
+nimble benchmarkNetworkOrc
 ```
 
 On Linux with Valgrind installed:
