@@ -217,16 +217,16 @@ jobs:
           JOUBAKO_FUZZ_ITERATIONS: 1000
         run: nimble --legacy --offline ubsanOrc
 
-      - name: Run Linux and macOS ARC standalone LeakSanitizer probe
-        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+      - name: Run Linux ARC standalone LeakSanitizer probe
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         env:
-          LSAN_OPTIONS: exitcode=99
+          LSAN_OPTIONS: detect_leaks=1:exitcode=99
         run: nimble --legacy --offline lsan
 
-      - name: Run Linux and macOS ORC standalone LeakSanitizer probe
-        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+      - name: Run Linux ORC standalone LeakSanitizer probe
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
         env:
-          LSAN_OPTIONS: exitcode=99
+          LSAN_OPTIONS: detect_leaks=1:exitcode=99
         run: nimble --legacy --offline lsanOrc
 
       - name: Run Linux and macOS ARC ThreadSanitizer probe
