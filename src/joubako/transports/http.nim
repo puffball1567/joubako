@@ -698,6 +698,12 @@ method send*(
     transport: HttpTransport;
     request: Request
 ): Future[types.Response] {.async.} =
+  if request.uploadSource != nil:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "streaming uploads require the HTTP/2 transport",
+      request.url
+    )
   if request.options.cancellation != nil and
       request.options.cancellation.cancelled:
     raise newJoubakoError(

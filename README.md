@@ -27,8 +27,8 @@ and in-process calls.
 - **Keep memory behavior predictable.** Joubako is tested with ARC and ORC and
   hammered under Valgrind on success and failure paths under both models.
 - **Use one model everywhere.** Typed JSON, JSON-RPC 2.0, CBOR, Protocol
-  Buffers, native gRPC, pluggable codecs, NIF/BIF, typed GraphQL, multipart
-  uploads, WebSockets, Unix-domain IPC, and in-process transports all speak
+  Buffers, four gRPC call shapes, pluggable codecs, NIF/BIF, typed GraphQL,
+  bounded streaming uploads, WebSockets, Unix-domain IPC, and in-process transports all speak
   the same request, result, cancellation, and deadline language.
 
 From a single GET to a resilient native service client, Joubako keeps the code
@@ -160,8 +160,8 @@ The current implementation includes:
 
 - awaitable HTTP requests returning `Future[JResult[T]]`;
 - event-loop-local HTTP keep-alive reuse with a bounded idle pool;
-- HTTP/2 multiplexing, connection reuse, bounded response streaming,
-  file-backed multipart uploads, redirects, and cancellation through the
+- HTTP/2 multiplexing, connection reuse, bounded request and response
+  streaming, file-backed multipart uploads, redirects, and cancellation through the
   optional libcurl transport;
 - bounded streaming gzip and deflate response decoding;
 - bounded Server-Sent Events parsing with backpressure, cancellation,
@@ -176,8 +176,9 @@ The current implementation includes:
   parsing;
 - typed Protocol Buffers binary requests and responses with compile-time
   `.proto` schema generation and strict media-type validation;
-- native gRPC unary calls and backpressured server streams over HTTP/2, with
-  completion trailers, deadlines, metadata, and structured status errors;
+- native gRPC unary, client-streaming, server-streaming, and bidirectional
+  calls over HTTP/2, with backpressure, completion trailers, deadlines,
+  metadata, and structured status errors;
 - typed GraphQL query, mutation, subscription, variable, directive, and
   fragment construction with parsed executable-document validation;
 - percent-encoded query parameters, including repeated names;
@@ -224,6 +225,31 @@ let transport = newHttp2Transport(allowH2c = true)
 Keep one transport alive and call `await transport.close()` during orderly
 shutdown. A shared transport reuses connections and multiplexes concurrent
 requests over the same HTTP/2 connection.
+
+Stream a request body without materializing it in one large string. `send`
+waits when the bounded producer queue is full; `finish` sends HTTP/2
+end-of-stream and waits for the response:
+
+```nim
+let upload = api.openUpload(
+  rmPost,
+  "objects",
+  maxBufferedBytes = 256 * 1024
+)
+
+while not source.atEnd:
+  let sent = await upload.send(source.readChunk())
+  if sent.isErr:
+    return sent.error
+
+let response = await upload.finish()
+```
+
+Streaming bodies are single-use, so Joubako rejects retry policies and
+redirect replay instead of risking duplicate or truncated uploads. Total
+`maxRequestBytes`, cancellation, timeout, and upload progress policy still
+apply. This producer API currently requires `Http2Transport`; buffered and
+file-backed multipart uploads remain available on HTTP/1.1.
 
 ## ARC and ORC memory models
 
@@ -582,6 +608,33 @@ let completed = await api.grpcServerStream(
 )
 ```
 
+Client streams expose the same bounded `send`/`finish` lifecycle:
+
+```nim
+let stream = api.openGrpcClientStream(
+  "example.v1.Metrics", "Collect", Metric, Summary
+)
+for metric in metrics:
+  let sent = await stream.send(metric)
+  if sent.isErr:
+    return sent.error
+let summary = await stream.finish()
+```
+
+For full duplex traffic, `openGrpcBidiStream` accepts an awaited response
+handler. Request and response messages then advance independently while both
+directions retain bounded backpressure:
+
+```nim
+let stream = api.openGrpcBidiStream(
+  "example.v1.Chat", "Connect", ClientMessage, ServerMessage,
+  proc(message: ServerMessage): Future[void] {.async.} =
+    await inbox.store(message)
+)
+discard await stream.send(ClientMessage(text: "hello"))
+let completed = await stream.finish()
+```
+
 Joubako emits the standard five-byte gRPC message envelope,
 `application/grpc+proto`, `te: trailers`, and a deadline-derived
 `grpc-timeout`. It validates negotiated HTTP/2, final `grpc-status`, message
@@ -590,10 +643,9 @@ binary metadata. Non-OK statuses remain structured as `jeRpcStatus`, with
 `grpcStatus`, `grpcMessage`, `grpcDetails`, and final metadata available from
 the error.
 
-Unary and server-streaming RPCs are supported. True incremental client and
-bidirectional streaming require an upload-streaming transport API and are not
-claimed by this release. Message compression is rejected explicitly until its
-per-message negotiation path is implemented. See the official
+Unary, client-streaming, server-streaming, and bidirectional RPCs are
+supported. Message compression is rejected explicitly until its per-message
+negotiation path is implemented. See the official
 [gRPC over HTTP/2 protocol](https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
 
 ## GraphQL

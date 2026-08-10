@@ -1,5 +1,5 @@
 import std/[asyncdispatch, os, strutils]
-import joubako/[result, types]
+import joubako/[client, result, types, uploadstream]
 import joubako/transports/http2
 
 proc main() {.async.} =
@@ -25,6 +25,16 @@ proc main() {.async.} =
     doAssert response.body == "ok"
 
   for _ in 0 ..< 25:
+    let upload = newClient(transport, "http://127.0.0.1:18943").openUpload(
+      rmPost, "/upload-stream", options = options, maxBufferedBytes = 17
+    )
+    let sent = await upload.send(repeat("stream-probe-", 64))
+    doAssert sent.isOk
+    let streamed = await upload.finish()
+    doAssert streamed.isOk
+    doAssert streamed.value.body ==
+      "POST:" & repeat("stream-probe-", 64)
+
     let multipart = await transport.send(Request(
       httpMethod: rmPost,
       url: "http://127.0.0.1:18943/multipart-redirect",

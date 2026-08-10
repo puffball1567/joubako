@@ -8,6 +8,17 @@ type
     proc(chunk: string): Future[void] {.closure.}
   ResponseHeadersProc* =
     proc(status: int; headers: Headers) {.closure.}
+  UploadWakeProc* = proc() {.closure, gcsafe.}
+  UploadReadProc* =
+    proc(buffer: pointer; capacity: int): int {.closure, gcsafe.}
+  UploadSetWakeProc* = proc(wake: UploadWakeProc) {.closure, gcsafe.}
+
+  UploadSource* = ref object
+    ## Pull interface consumed by streaming-capable transports. `read` returns
+    ## a positive byte count, `UploadReadEof`, `UploadReadPause`, or
+    ## `UploadReadAbort`. `setWake` lets a producer resume a paused transport.
+    read*: UploadReadProc
+    setWake*: UploadSetWakeProc
 
   IdempotencyMode* = enum
     imDefault,
@@ -81,6 +92,7 @@ type
     headers*: Headers
     body*: string
     multipartParts*: seq[MultipartPart]
+    uploadSource*: UploadSource
     options*: RequestOptions
 
   Response* = object
@@ -144,6 +156,11 @@ type
     response*: ErrorResponse
     ## Number of transport attempts completed for this logical request.
     attempts*: int
+
+const
+  UploadReadEof* = 0
+  UploadReadPause* = -1
+  UploadReadAbort* = -2
 
 func normalizeHeader(name: string): string =
   name.strip.toLowerAscii

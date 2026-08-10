@@ -1,11 +1,12 @@
 ## Native gRPC over Joubako's HTTP/2 transport.
 ##
-## This module implements Protobuf unary calls and backpressured server
-## streams. HTTP/2 framing remains owned by the transport; this layer owns the
-## gRPC message envelope, completion trailers, metadata, and status mapping.
+## This module implements all four Protobuf gRPC call shapes with bounded
+## request queues and backpressured response handlers. HTTP/2 framing remains
+## owned by the transport; this layer owns the gRPC message envelope,
+## completion trailers, metadata, and status mapping.
 
 import std/[asyncdispatch, base64, strutils]
-import ./[client, protobufcodec, result, types]
+import ./[client, protobufcodec, result, types, uploadstream]
 
 const
   GrpcMediaType* = "application/grpc+proto"
@@ -70,6 +71,17 @@ type
     onMessage: GrpcMessageProc[T]
     previousHeaders: ResponseHeadersProc
     previousAsync: AsyncDownloadChunkProc
+    options: GrpcOptions
+    path: string
+
+  GrpcClientStream*[TRequest, TResponse] = ref object
+    upload: UploadStream
+    options: GrpcOptions
+    path: string
+
+  GrpcBidiStream*[TRequest, TResponse] = ref object
+    upload: UploadStream
+    decoder: GrpcFrameDecoder[TResponse]
     options: GrpcOptions
     path: string
 
@@ -746,3 +758,196 @@ proc grpcServerStream*[TRequest, TResponse](
     service, methodName, value, responseType, wrapped,
     headers, options, grpcOptions
   )
+
+proc openGrpcClientStream*[TRequest, TResponse](
+    client: Client;
+    service, methodName: string;
+    _: typedesc[TRequest];
+    responseType: typedesc[TResponse];
+    headers = initHeaders();
+    options = RequestOptions();
+    grpcOptions = defaultGrpcOptions();
+    maxBufferedBytes = 256 * 1024
+): GrpcClientStream[TRequest, TResponse] =
+  ## Opens a client-streaming call whose response contains one message.
+  let path = grpcMethodPath(service, methodName)
+  result = GrpcClientStream[TRequest, TResponse](
+    options: grpcOptions,
+    path: path
+  )
+  result.upload = client.openUpload(
+    rmPost,
+    path,
+    prepareGrpcHeaders(client, headers, options),
+    options,
+    maxBufferedBytes
+  )
+
+proc send*[TRequest, TResponse](
+    stream: GrpcClientStream[TRequest, TResponse];
+    message: TRequest
+): Future[JResult[void]] =
+  if stream == nil or stream.upload == nil:
+    return completedResult(err[void](grpcError(
+      "grpc_stream_state", "gRPC client stream is nil", kind = jeInvalidRequest
+    )))
+  let encoded = tryEncodeGrpcFrame(message, stream.options, stream.path)
+  if encoded.isErr:
+    return completedResult(err[void](encoded.error))
+  stream.upload.send(encoded.value)
+
+proc finish*[TRequest, TResponse](
+    stream: GrpcClientStream[TRequest, TResponse]
+): Future[JResult[GrpcResponse[TResponse]]] {.async.} =
+  if stream == nil or stream.upload == nil:
+    return err[GrpcResponse[TResponse]](grpcError(
+      "grpc_stream_state", "gRPC client stream is nil", kind = jeInvalidRequest
+    ))
+  let response = await stream.upload.finish()
+  if response.isErr:
+    return err[GrpcResponse[TResponse]](response.error)
+  let valid = validateGrpcResponse(response.value, stream.options)
+  if valid.isErr:
+    valid.error.attachResponse(response.value)
+    return err[GrpcResponse[TResponse]](valid.error)
+  let completion = grpcCompletion(response.value)
+  if completion.isErr:
+    completion.error.attachResponse(response.value)
+    return err[GrpcResponse[TResponse]](completion.error)
+  if completion.value.code != gsOk:
+    return err[GrpcResponse[TResponse]](grpcStatusError(
+      completion.value, response.value
+    ))
+  let decoded = tryDecodeGrpcFrames(
+    response.value.body, TResponse, stream.options,
+    response.value.request.url, response.value.status
+  )
+  if decoded.isErr:
+    decoded.error.attachResponse(response.value)
+    return err[GrpcResponse[TResponse]](decoded.error)
+  if decoded.value.len != 1:
+    let error = grpcError(
+      "grpc_unary_message_count",
+      "client-streaming gRPC response must contain exactly one message; received " &
+        $decoded.value.len,
+      response.value.request.url,
+      response.value.status
+    )
+    error.attachResponse(response.value)
+    return err[GrpcResponse[TResponse]](error)
+  ok(GrpcResponse[TResponse](
+    message: decoded.value[0],
+    headers: response.value.headers,
+    trailers: response.value.trailers,
+    completion: completion.value
+  ))
+
+proc openGrpcBidiStream*[TRequest, TResponse](
+    client: Client;
+    service, methodName: string;
+    _: typedesc[TRequest];
+    responseType: typedesc[TResponse];
+    onMessage: GrpcMessageProc[TResponse];
+    headers = initHeaders();
+    options = RequestOptions();
+    grpcOptions = defaultGrpcOptions();
+    maxBufferedBytes = 256 * 1024
+): GrpcBidiStream[TRequest, TResponse] =
+  ## Opens a full-duplex gRPC stream. Received messages are delivered with
+  ## awaited backpressure while request messages may continue to be sent.
+  if onMessage.isNil:
+    raise grpcError(
+      "grpc_nil_handler", "gRPC message handler must not be nil",
+      kind = jeInvalidRequest
+    )
+  let path = grpcMethodPath(service, methodName)
+  let decoder = newGrpcFrameDecoder(TResponse, grpcOptions, path)
+  var streamOptions = options
+  let context = GrpcStreamContext[TResponse](
+    decoder: decoder,
+    onMessage: onMessage,
+    previousHeaders: streamOptions.onResponseHeaders,
+    previousAsync: streamOptions.onDownloadChunkAsync,
+    options: grpcOptions,
+    path: path
+  )
+  streamOptions.onResponseHeaders = context.streamHeadersCallback()
+  streamOptions.onDownloadChunkAsync = context.streamChunkCallback()
+  streamOptions.streamResponse = true
+  result = GrpcBidiStream[TRequest, TResponse](
+    decoder: decoder,
+    options: grpcOptions,
+    path: path
+  )
+  result.upload = client.openUpload(
+    rmPost,
+    path,
+    prepareGrpcHeaders(client, headers, options),
+    streamOptions,
+    maxBufferedBytes
+  )
+
+proc send*[TRequest, TResponse](
+    stream: GrpcBidiStream[TRequest, TResponse];
+    message: TRequest
+): Future[JResult[void]] =
+  if stream == nil or stream.upload == nil:
+    return completedResult(err[void](grpcError(
+      "grpc_stream_state", "gRPC bidirectional stream is nil",
+      kind = jeInvalidRequest
+    )))
+  let encoded = tryEncodeGrpcFrame(message, stream.options, stream.path)
+  if encoded.isErr:
+    return completedResult(err[void](encoded.error))
+  stream.upload.send(encoded.value)
+
+proc finish*[TRequest, TResponse](
+    stream: GrpcBidiStream[TRequest, TResponse]
+): Future[JResult[GrpcCompletion]] {.async.} =
+  if stream == nil or stream.upload == nil:
+    return err[GrpcCompletion](grpcError(
+      "grpc_stream_state", "gRPC bidirectional stream is nil",
+      kind = jeInvalidRequest
+    ))
+  let response = await stream.upload.finish()
+  if response.isErr:
+    return err[GrpcCompletion](response.error)
+  let valid = validateGrpcResponse(response.value, stream.options)
+  if valid.isErr:
+    valid.error.attachResponse(response.value)
+    return err[GrpcCompletion](valid.error)
+  let finished = stream.decoder.finish()
+  if finished.isErr:
+    finished.error.attachResponse(response.value)
+    return err[GrpcCompletion](finished.error)
+  let completion = grpcCompletion(response.value)
+  if completion.isErr:
+    completion.error.attachResponse(response.value)
+    return err[GrpcCompletion](completion.error)
+  if response.value.trailers.getAll("grpc-status").len == 0 and
+      stream.decoder.messagesSeen > 0:
+    let error = grpcError(
+      "grpc_trailers_only_body",
+      "a trailers-only gRPC response must not contain streamed messages",
+      response.value.request.url,
+      response.value.status
+    )
+    error.attachResponse(response.value)
+    return err[GrpcCompletion](error)
+  if completion.value.code != gsOk:
+    return err[GrpcCompletion](grpcStatusError(
+      completion.value, response.value
+    ))
+  ok(completion.value)
+
+proc cancel*[TRequest, TResponse](
+    stream: GrpcClientStream[TRequest, TResponse]; reason = "gRPC stream cancelled"
+) =
+  if stream != nil:
+    stream.upload.cancel(reason)
+
+proc cancel*[TRequest, TResponse](
+    stream: GrpcBidiStream[TRequest, TResponse]; reason = "gRPC stream cancelled"
+) =
+  if stream != nil:
+    stream.upload.cancel(reason)
