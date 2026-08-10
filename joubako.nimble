@@ -121,6 +121,7 @@ const asanPrograms = [
 ]
 
 proc runAsanSuite(memoryManager: string) =
+  # Windows uses LLVM Clang's ASan rather than MSVC's implementation.
   let compilerFlag =
     if hostOS == "windows": " --cc:clang"
     else: ""

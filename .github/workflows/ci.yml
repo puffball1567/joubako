@@ -174,15 +174,29 @@ jobs:
           JOUBAKO_FUZZ_ITERATIONS: 2000
         run: nimble --legacy --offline asanOrc
 
-      - name: Run macOS and Windows ARC AddressSanitizer probes
-        if: matrix.os != 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+      - name: Run macOS ARC AddressSanitizer probes
+        if: matrix.os == 'macos-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         env:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           JOUBAKO_FUZZ_ITERATIONS: 2000
         run: nimble --legacy --offline asan
 
-      - name: Run macOS and Windows ORC AddressSanitizer probes
-        if: matrix.os != 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+      - name: Run macOS ORC AddressSanitizer probes
+        if: matrix.os == 'macos-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asanOrc
+
+      - name: Run Windows Clang ARC AddressSanitizer probes
+        if: matrix.os == 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asan
+
+      - name: Run Windows Clang ORC AddressSanitizer probes
+        if: matrix.os == 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
         env:
           ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
           JOUBAKO_FUZZ_ITERATIONS: 2000
