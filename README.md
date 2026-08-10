@@ -1304,6 +1304,22 @@ process exit; this is reported separately from lost memory. A dedicated
 fault-injection probe additionally repeats retry recovery from transport and
 HTTP failures.
 
+AddressSanitizer probes exercise deterministic malformed codec, compression,
+and gRPC inputs plus repeated asynchronous Result, callback, and file-streaming
+lifecycles under both ARC and ORC:
+
+```sh
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asan
+ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asanOrc
+```
+
+CI runs these probes with an AddressSanitizer-capable native compiler on
+Linux, macOS, and Windows. LeakSanitizer is enabled only on Linux. The macOS
+and Windows jobs explicitly use
+`ASAN_OPTIONS=detect_leaks=0`; they still fail on AddressSanitizer findings
+such as out-of-bounds access, use-after-free, and double-free. Valgrind remains
+the separate Linux allocation-leak gate.
+
 ## Benchmark
 
 ```sh

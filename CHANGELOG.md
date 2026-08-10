@@ -21,6 +21,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   GraphQL errors, and explicit completion.
 - Validated resumable file downloads using Range, Content-Range, identity
   encoding, and optional If-Range validators, with offset-aware progress.
+- Cross-platform AddressSanitizer CI for ARC and ORC on Linux, macOS,
+  and Windows, with LeakSanitizer enabled only on Linux.
 
 ### Fixed
 
