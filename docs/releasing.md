@@ -54,6 +54,25 @@ ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asan
 ASAN_OPTIONS=detect_leaks=1:halt_on_error=1:abort_on_error=1 nimble asanOrc
 ```
 
+Run the remaining sanitizer gates on their supported platforms:
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 nimble ubsan
+UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 nimble ubsanOrc
+LSAN_OPTIONS=exitcode=99 nimble lsan
+LSAN_OPTIONS=exitcode=99 nimble lsanOrc
+TSAN_OPTIONS=halt_on_error=1:exitcode=99 nimble tsan
+TSAN_OPTIONS=halt_on_error=1:exitcode=99 nimble tsanOrc
+```
+
+UBSan, standalone LSan, and TSan are required on Linux and macOS. Windows
+UBSan is excluded because its LLVM runtime does not link reliably with the
+Windows Nim toolchain; full tests, type checks, and Clang ASan are its mandatory
+substitute gates. Both memory managers are required for every applicable
+sanitizer/platform combination. macOS keeps ASan `detect_leaks=0`; its leak
+gate is the standalone LSan build. See [sanitizer support](sanitizer-support.md)
+for the maintained platform matrix.
+
 On Linux with Valgrind installed:
 
 ```sh
@@ -64,8 +83,8 @@ nimble leakOrc
 Push the release branch and require all GitHub Actions jobs to pass. The matrix
 must cover Linux, macOS, and Windows with the oldest supported Nim release and
 the current stable release. Both ARC and ORC variants of the Linux SSL, Docker
-E2E, and Valgrind jobs must also pass. Stable Nim ARC and ORC AddressSanitizer
-jobs must pass on Linux, macOS, and Windows.
+E2E, and Valgrind jobs must also pass. Stable Nim ARC and ORC sanitizer jobs
+must pass on every platform listed above.
 
 ## Release
 
