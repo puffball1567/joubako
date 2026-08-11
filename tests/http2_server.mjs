@@ -240,12 +240,19 @@ server.on("stream", (stream, headers) => {
         : path === "/multipart-method"
           ? `${method}\n${headers["content-type"]}\n${requestBody}`
         : "ok";
-    stream.respond({
-      ":status": 200,
-      "content-type": "text/plain",
-      "content-length": Buffer.byteLength(body)
-    });
-    stream.end(body);
+    // A client detecting a truncated upload resets the stream. The readable
+    // side can still emit `end`, so responding here must tolerate that reset.
+    if (stream.destroyed || stream.closed) return;
+    try {
+      stream.respond({
+        ":status": 200,
+        "content-type": "text/plain",
+        "content-length": Buffer.byteLength(body)
+      });
+      stream.end(body);
+    } catch (error) {
+      if (error?.code !== "ERR_HTTP2_INVALID_STREAM") throw error;
+    }
   });
 });
 
