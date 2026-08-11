@@ -8,7 +8,7 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 requires "flowbrigade >= 0.5.0"
-requires "nifkit >= 0.2.0"
+requires "nifkit >= 0.3.1"
 requires "zlib >= 0.2.0"
 requires "libcurl >= 1.0.0"
 requires "faststreams >= 0.5.1"

@@ -12,7 +12,10 @@ checkout with no tracked changes and with the release dependencies available.
 4. Confirm direct dependency minimums and their licenses:
    FlowBrigade, NIFKit, nim-zlib, libcurl, faststreams, and the vendored
    nim-graphql parser.
-5. Confirm `nimble.paths`, `nimble.develop`, build products, credentials, keys,
+5. Confirm Joubako's NIF/BIF network defaults remain finite for every NIFKit
+   `CodecLimits` field; NIFKit's own omitted defaults are intentionally
+   unbounded and must not become the HTTP boundary policy.
+6. Confirm `nimble.paths`, `nimble.develop`, build products, credentials, keys,
    and machine-specific paths are not tracked. The certificates under
    `tests/testdata/tls` are test-only fixtures and must never be used outside
    the test suite.

@@ -145,6 +145,9 @@ type
     ## `codecOffset` is -1 when the codec did not identify a byte position.
     codecCode*: string
     codecOffset*: int
+    ## Logical value path supplied by structured codecs, for example
+    ## `$.items[3].price`. Empty when the codec does not expose one.
+    codecPath*: string
     ## gRPC status details. `grpcStatus` is -1 for non-gRPC errors.
     grpcStatus*: int
     grpcMessage*: string

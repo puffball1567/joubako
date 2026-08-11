@@ -15,7 +15,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 | gRPC | Complete | Native Protobuf gRPC unary, client-streaming, server-streaming, and bidirectional calls over negotiated HTTP/2; bounded request queues, backpressured response handlers, five-byte incremental framing, per-message gzip negotiation with independent compressed/expanded limits, completion trailers, deadlines, ASCII/binary metadata, structured status/message/details, strict size/count/media validation, and real Node zlib/h2c integration |
 | GraphQL client | Complete | Typed query/mutation/subscription builder, variables, aliases, directives, fragments, raw-document escape hatch, nim-graphql executable syntax validation, standard JSON-over-HTTP envelope, and long-lived `graphql-transport-ws` subscriptions with typed partial data and structured errors |
 | Promise-style composition | Complete | Result-aware synchronous/asynchronous `then`, typed `catch`, `finally`, heterogeneous two-operation `all`; callback exceptions, failed callback Futures, and nil callback Futures settle as errors |
-| NIF/BIF through NIFKit | Complete for NIFKit v0.2 | NIF text request API, BIF v5 wire encoding, canonical NIF response decoding, finite per-direction codec limits, structured error code/offset mapping; typed Nim-value serialization awaits a future NIFKit API |
+| NIF/BIF through NIFKit | Complete for NIFKit v0.3.1 | Raw NIF text and typed Nim-value request APIs over BIF v5, direct typed BIF conversion without intermediate NIF text, Joubako-owned finite network defaults for all codec resources, named method/exact-path/longest-prefix policies binding wire and codec budgets, independently configurable encode/decode limits, strict typed compatibility defaults, and structured code/offset/path errors |
 | Local IPC | Complete on POSIX | Unix domain sockets with a bounded framed protocol |
 | In-process transport | Complete | Deterministic handler transport |
 | WebSocket | Complete | One-shot transport, long-lived connection primitives, explicit and verified subprotocol negotiation |
@@ -55,10 +55,3 @@ and frees every OpenSSL context, but it cannot clear Futures retained inside
 the standard-library transport. The deterministic Joubako error probes remain
 zero-leak; the real secure-transport integration suite keeps this upstream
 failure-path behavior visible until Nim fixes it or the transport is replaced.
-
-## Deferred
-
-NIFKit v0.2 deliberately exposes NIF text/BIF conversion rather than its
-planned typed Nim-value data profile. Joubako therefore supports the complete
-bounded v0.2 wire codec now; typed `toNif`/`fromNif` helpers can be layered onto
-the same request API when NIFKit publishes them.
