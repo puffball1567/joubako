@@ -5,7 +5,7 @@ boundaries. It complements the protocol-focused loopback tests; it does not
 replace them.
 
 ```text
-client (Nim 2.2.10 + Joubako, ARC)
+client (Nim 2.2.10 + Joubako, ARC or ORC)
   | HTTP over the Compose network
   +--> backend (independent Python HTTP server)
   +--> redirect (independent second origin)
@@ -20,6 +20,7 @@ Run the suite with a working Docker daemon:
 
 ```sh
 nimble e2e
+nimble e2eOrc
 ```
 
 When Docker is unavailable, run the same HTTP scenarios across independent
@@ -27,13 +28,14 @@ host processes and real loopback TCP sockets:
 
 ```sh
 nimble e2eHost
+nimble e2eHostOrc
 ```
 
 The host runner selects unused ports, starts separate backend and redirect
-Python processes, compiles the client with ARC, and stops only those processes
-when the suite finishes. It does not require elevated privileges or modify
-existing services. The Docker suite remains the release/CI check for container
-DNS and network isolation.
+Python processes, compiles the client with the selected ARC or ORC memory
+manager, and stops only those processes when the suite finishes. It does not
+require elevated privileges or modify existing services. The Docker suite
+remains the release/CI check for container DNS and network isolation.
 
 The task always removes its containers, network, and volumes. The services do
 not publish host ports.

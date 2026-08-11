@@ -2,6 +2,14 @@ import std/[asyncdispatch, os, random, strutils, times]
 import joubako
 import joubako/compression
 
+type FuzzProtobuf {.proto3.} = object
+  id {.fieldNumber: 1, pint.}: uint64
+  payload {.fieldNumber: 2.}: seq[byte]
+
+type FuzzNifValue = object
+  id: int
+  payload: string
+
 proc randomBytes(maxLength: int): string =
   result = newString(rand(maxLength))
   for index in 0 ..< result.len:
@@ -29,6 +37,81 @@ proc fuzzCompression(payload: string): Future[void] {.async.} =
     else:
       doAssert decoded.error.kind in {jeCompression, jeBodyTooLarge}
 
+proc fuzzJsonStreams(payload: string) =
+  for format in [jsfNdjson, jsfJsonSequence]:
+    var options = defaultJsonStreamParserOptions()
+    options.maxRecordBytes = 128
+    options.skipInvalidRecords = (payload.len mod 2) == 0
+    options.allowUnterminatedNdjsonRecord = (payload.len mod 3) == 0
+    let parser = newJsonStreamParser(format, options)
+    var offset = 0
+    var failed = false
+    while offset < payload.len and not failed:
+      let size = min(payload.len - offset, max(1, rand(16)))
+      let parsed = parser.feed(payload[offset ..< offset + size])
+      if parsed.isErr:
+        doAssert parsed.error.kind in {jeCodec, jeBodyTooLarge}
+        failed = true
+      offset += size
+    if not failed:
+      let finished = parser.finish()
+      if finished.isErr:
+        doAssert finished.error.kind in {jeCodec, jeBodyTooLarge}
+
+proc fuzzCbor(payload: string) =
+  var options = defaultCborCodecOptions()
+  options.maxPayloadBytes = 512
+  options.readerConf.nestedDepthLimit = 16
+  options.readerConf.arrayElementsLimit = 64
+  options.readerConf.objectFieldsLimit = 64
+  options.readerConf.stringLengthLimit = 256
+  options.readerConf.byteStringLengthLimit = 256
+  for decoded in [
+      tryDecodeCborPayload(payload, uint64, options).isOk,
+      tryDecodeCborPayload(payload, string, options).isOk,
+      tryDecodeCborPayload(payload, seq[byte], options).isOk,
+      tryDecodeCborPayload(payload, CborValueRef, options).isOk
+  ]:
+    discard decoded
+
+proc fuzzProtobuf(payload: string) =
+  var options = defaultProtobufCodecOptions()
+  options.maxPayloadBytes = 512
+  let decoded = tryDecodeProtobufPayload(payload, FuzzProtobuf, options)
+  if decoded.isErr:
+    doAssert decoded.error.kind == jeCodec
+
+proc fuzzGrpc(payload: string) =
+  var options = defaultGrpcOptions()
+  options.maxMessageBytes = 512
+  options.maxFrameBytes = 512
+  options.maxResponseMessages = 32
+  let decoded = tryDecodeGrpcFrames(payload, FuzzProtobuf, options)
+  if decoded.isErr:
+    doAssert decoded.error.kind == jeCodec
+  let compressed = tryDecodeGrpcFrames(
+    payload, FuzzProtobuf, options, encoding = geGzip
+  )
+  if compressed.isErr:
+    doAssert compressed.error.kind in {jeCodec, jeCompression, jeBodyTooLarge}
+
+proc fuzzNif(payload: string) =
+  var options = defaultNifCodecOptions()
+  options.decodeLimits.maxInputBytes = 512
+  options.decodeLimits.maxOutputBytes = 2_048
+  options.decodeLimits.maxNestingDepth = 16
+  options.decodeLimits.maxTokens = 128
+  options.decodeLimits.maxPoolEntries = 64
+  options.decodeLimits.maxPoolBytes = 512
+  options.decodeLimits.maxStringBytes = 256
+  options.decodeLimits.maxIndexEntries = 32
+  options.decodeLimits.maxContainerItems = 32
+  options.decodeLimits.maxObjectFields = 16
+  options.decodeLimits.maxTrackedReferences = 16
+  let decoded = tryDecodeNifValue(payload, FuzzNifValue, options)
+  if decoded.isErr:
+    doAssert decoded.error.kind == jeCodec
+
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)
   let iterations = getEnv("JOUBAKO_FUZZ_ITERATIONS", "10000").parseInt
@@ -51,6 +134,11 @@ proc main(): Future[void] {.async.} =
     discard withQuery("/fuzz#fragment", [
       (name: payload, value: randomBytes(64))
     ])
+    fuzzJsonStreams(payload)
+    fuzzCbor(payload)
+    fuzzProtobuf(payload)
+    fuzzGrpc(payload)
+    fuzzNif(payload)
     if index mod 10 == 0:
       await fuzzCompression(payload)
 

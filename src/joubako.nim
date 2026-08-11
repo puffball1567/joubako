@@ -1,8 +1,8 @@
-import joubako/[auth, client, codec, cookiejar, formcodec, http_retry,
-  jsoncodec, nifcodec, promise, proxyconfig, query, multipart, result, streaming,
-  transport, types]
-import joubako/transports/[faultinject, http, inprocess, ipc, websocket]
+import joubako/[auth, cborcodec, client, codec, cookiejar, formcodec, graphql, grpc, httpcache, http_retry,
+  jsoncodec, jsonrpc, jsonstream, nifcodec, opentelemetry, promise, protobufcodec, proxyconfig, query, multipart, result, sse, streaming,
+  transport, types, uploadstream]
+import joubako/transports/[faultinject, http, http2, inprocess, ipc, websocket]
 
-export auth, client, codec, cookiejar, formcodec, http_retry, jsoncodec,
-  nifcodec, promise, query, multipart, result, streaming, transport, types, http,
-  proxyconfig, faultinject, inprocess, ipc, websocket
+export auth, cborcodec, client, codec, cookiejar, formcodec, graphql, grpc, httpcache, http_retry, jsoncodec,
+  jsonrpc, jsonstream, nifcodec, opentelemetry, promise, protobufcodec, query, multipart, result, sse, streaming, transport, types, http,
+  proxyconfig, uploadstream, faultinject, http2, inprocess, ipc, websocket

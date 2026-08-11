@@ -1,7 +1,61 @@
 import std/[asyncdispatch, sequtils, strutils, unittest]
 import nifkit
-import joubako
+import joubako/[client, multipart, nifcodec, result, transport, types]
+import joubako/transports/inprocess
 import ./result_test_helpers
+
+type
+  CreateRecord = object
+    title: string
+    count: int
+    enabled: bool
+
+  RecordReply = object
+    id: int
+    record: CreateRecord
+
+  SmallCount = object
+    count: int8
+
+  TwoFields = object
+    first: int
+    second: int
+
+  BinaryMetadata = object
+    title: string
+    digest: NifBytes
+
+  RefNode = ref object
+    value: int
+    next: RefNode
+
+  RuntimeMultipartTransport = ref object of Transport
+    captured: Request
+    responseBody: string
+
+  PreflightMultipartTransport = ref object of RuntimeMultipartTransport
+
+method supportsRuntimeMultipartLimits(
+    transport: RuntimeMultipartTransport
+): bool =
+  transport != nil
+
+method supportsRuntimeMultipartLimits(
+    transport: PreflightMultipartTransport
+): bool =
+  discard transport
+  false
+
+method send(
+    transport: RuntimeMultipartTransport;
+    request: Request
+): Future[Response] {.async.} =
+  transport.captured = request
+  return Response(
+    status: 200,
+    body: transport.responseBody,
+    request: request
+  )
 
 proc echoBif(request: Request): Future[Response] {.async.} =
   return Response(status: 200, body: request.body, request: request)
@@ -19,19 +73,362 @@ template expectCodecFailure(expectedCode: string; body: untyped) =
       check error.codecCode == expectedCode
 
 suite "NIFKit codec integration":
-  test "default options retain every finite NIFKit limit":
+  test "network defaults are finite and independent from NIFKit policy":
     let options = defaultNifCodecOptions()
-    let expected = defaultCodecLimits()
-    check options.encodeLimits == expected
-    check options.decodeLimits == expected
-    check expected.maxInputBytes > 0
-    check expected.maxOutputBytes > 0
-    check expected.maxNestingDepth > 0
-    check expected.maxTokens > 0
-    check expected.maxPoolEntries > 0
-    check expected.maxPoolBytes > 0
-    check expected.maxStringBytes > 0
-    check expected.maxIndexEntries > 0
+    check defaultCodecLimits() == unlimitedCodecLimits()
+    check options.encodeLimits != defaultCodecLimits()
+    check options.encodeLimits.maxInputBytes == DefaultNifInputBytes
+    check options.encodeLimits.maxOutputBytes == DefaultNifEncodedBytes
+    check options.encodeLimits.maxNestingDepth == DefaultNifNestingDepth
+    check options.encodeLimits.maxTokens == DefaultNifTokens
+    check options.encodeLimits.maxPoolEntries == DefaultNifPoolEntries
+    check options.encodeLimits.maxPoolBytes == DefaultNifPoolBytes
+    check options.encodeLimits.maxStringBytes == DefaultNifStringBytes
+    check options.encodeLimits.maxIndexEntries == DefaultNifIndexEntries
+    check options.encodeLimits.maxContainerItems == DefaultNifContainerItems
+    check options.encodeLimits.maxObjectFields == DefaultNifObjectFields
+    check options.encodeLimits.maxTrackedReferences ==
+      DefaultNifTrackedReferences
+    check options.decodeLimits.maxInputBytes == DefaultNifInputBytes
+    check options.decodeLimits.maxOutputBytes == DefaultNifDecodedBytes
+    check options.decodeLimits.maxNestingDepth == DefaultNifNestingDepth
+    check options.decodeLimits.maxTokens == DefaultNifTokens
+    check options.decodeLimits.maxPoolEntries == DefaultNifPoolEntries
+    check options.decodeLimits.maxPoolBytes == DefaultNifPoolBytes
+    check options.decodeLimits.maxStringBytes == DefaultNifStringBytes
+    check options.decodeLimits.maxIndexEntries == DefaultNifIndexEntries
+    check options.decodeLimits.maxContainerItems == DefaultNifContainerItems
+    check options.decodeLimits.maxObjectFields == DefaultNifObjectFields
+    check options.decodeLimits.maxTrackedReferences ==
+      DefaultNifTrackedReferences
+    check options.typedOptions.requireTypeNames
+    check not options.typedOptions.allowUnknownFields
+
+  test "recommended NIF multipart defaults require no configuration":
+    let limits = defaultNifMultipartLimits()
+    check limits.maxMetadataBytes == 64 * 1024
+    check limits.maxUploadBytes == 128'i64 * 1024 * 1024
+    check limits.maxMultipartBytes == 129 * 1024 * 1024
+    check limits.requireRuntimeAccounting
+
+  test "typed NIF multipart keeps metadata file and total limits separate":
+    let reply = RecordReply(
+      id: 17,
+      record: CreateRecord(title: "photo", count: 1, enabled: true)
+    )
+    let transport = RuntimeMultipartTransport(
+      responseBody: toBif(reply, defaultNifEncodeLimits())
+    )
+    let metadata = CreateRecord(title: "photo", count: 1, enabled: true)
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      metadata,
+      formFilePath("file", "/managed/photo.png", contentType = "image/png"),
+      RecordReply
+    )
+    check outcome.isOk
+    check outcome.value == reply
+    check transport.captured.multipartParts.len == 2
+    let metadataPart = transport.captured.multipartParts[0]
+    let filePart = transport.captured.multipartParts[1]
+    check metadataPart.name == "metadata"
+    check metadataPart.contentType == BifMediaType
+    check metadataPart.maxBytes == DefaultNifMetadataBytes.int64
+    check fromBif(
+      metadataPart.body, CreateRecord, defaultNifDecodeLimits()
+    ) == metadata
+    check filePart.filePath == "/managed/photo.png"
+    check filePart.maxBytes == DefaultNifUploadBytes.int64
+    check transport.captured.options.maxRequestBytes ==
+      DefaultNifMultipartBytes
+    check transport.captured.headers.get("accept") == BifMediaType
+
+  test "NIFKit v0.4 binary metadata stays inside the bounded BIF part":
+    let transport = RuntimeMultipartTransport(responseBody: "ok")
+    let metadata = BinaryMetadata(
+      title: "opaque digest",
+      digest: initNifBytes("\0\x80\xFF")
+    )
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      metadata,
+      formFilePath("file", "/managed/archive.bin")
+    )
+    check outcome.isOk
+    check transport.captured.multipartParts.len == 2
+    let metadataPart = transport.captured.multipartParts[0]
+    check metadataPart.maxBytes == DefaultNifMetadataBytes.int64
+    check fromBif(
+      metadataPart.body, BinaryMetadata, defaultNifDecodeLimits()
+    ) == metadata
+
+  test "strict NIF multipart rejects transports without runtime accounting":
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(echoBif)
+    ).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: "photo", count: 1, enabled: true),
+      formFilePath("file", "/managed/photo.png")
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeInvalidRequest
+    check "cannot enforce multipart limits" in outcome.error.msg
+
+  test "preflight-only multipart use requires an explicit relaxation":
+    let transport = PreflightMultipartTransport(responseBody: "ok")
+    let limits = newNifMultipartLimits(requireRuntimeAccounting = false)
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: "managed", count: 1, enabled: true),
+      formFilePath("file", "/managed/immutable.png"),
+      limits = limits
+    )
+    check outcome.isOk
+    check transport.captured.multipartParts.len == 2
+
+  test "NIF multipart metadata limits fail before dispatch":
+    let transport = RuntimeMultipartTransport(responseBody: "unused")
+    let limits = newNifMultipartLimits(maxMetadataBytes = 32)
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: repeat('x', 128), count: 1, enabled: true),
+      formFilePath("file", "/managed/photo.png"),
+      limits = limits
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeCodec
+    check transport.captured.multipartParts.len == 0
+
+  test "named policies apply route-specific wire and codec limits":
+    var observedRequestLimit = 0
+    var observedResponseLimit = 0
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      observedRequestLimit = request.options.maxRequestBytes
+      observedResponseLimit = request.options.maxResponseBytes
+      return Response(status: 200, body: request.body, request: request)
+    var policies = initNifPolicySet()
+    policies.definePolicy("default", newNifPolicy(
+      maxRequestBytes = 1024 * 1024,
+      maxResponseBytes = 1024 * 1024,
+      maxNestingDepth = 64,
+      maxTokens = 100_000,
+      maxPoolBytes = 512 * 1024
+    ))
+    policies.definePolicy("upload", newNifPolicy(
+      maxRequestBytes = 128 * 1024 * 1024,
+      maxResponseBytes = 2 * 1024 * 1024,
+      maxNestingDepth = 32,
+      maxTokens = 200_000,
+      maxPoolBytes = 1024 * 1024
+    ))
+    policies.addRoute NifPolicyRoute(
+      httpMethods: {rmPost}, path: "/uploads", policy: "upload"
+    )
+    policies.addRoute NifPolicyRoute(
+      pathPrefix: "/", policy: "default"
+    )
+    let client = newClient(newInProcessTransport(handler)).withNifPolicies(
+      policies
+    )
+    check waitFor(client.postNif("/uploads", "(file true)")) ==
+      "(file true)"
+    check observedRequestLimit == 128 * 1024 * 1024
+    check observedResponseLimit == 2 * 1024 * 1024
+    let selected = policies.resolveNifPolicy(rmPost, "/uploads")
+    check selected.codecOptions.encodeLimits.maxInputBytes ==
+      128 * 1024 * 1024
+    check selected.codecOptions.encodeLimits.maxOutputBytes ==
+      128 * 1024 * 1024
+    check selected.codecOptions.encodeLimits.maxNestingDepth == 32
+    check selected.codecOptions.decodeLimits.maxTokens == 200_000
+    check selected.codecOptions.decodeLimits.maxPoolBytes == 1024 * 1024
+
+  test "named upload policies select independent multipart budgets":
+    let transport = RuntimeMultipartTransport(responseBody: "ok")
+    var policies = initNifPolicySet()
+    policies.definePolicy("upload", newNifPolicy(
+      maxRequestBytes = 1024 * 1024,
+      maxMetadataBytes = 48 * 1024,
+      maxUploadBytes = 128'i64 * 1024 * 1024,
+      maxMultipartBytes = 129 * 1024 * 1024
+    ))
+    policies.addRoute NifPolicyRoute(
+      httpMethods: {rmPost}, path: "/uploads", policy: "upload"
+    )
+    let outcome = waitOutcome newClient(transport).withNifPolicies(
+      policies
+    ).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: "photo", count: 1, enabled: true),
+      formFilePath("file", "/managed/photo.png")
+    )
+    check outcome.isOk
+    check transport.captured.multipartParts[0].maxBytes == 48 * 1024
+    check transport.captured.multipartParts[1].maxBytes ==
+      128'i64 * 1024 * 1024
+    check transport.captured.options.maxRequestBytes == 129 * 1024 * 1024
+
+  test "policy routes honor methods exact paths and query-free prefixes":
+    var policies = initNifPolicySet()
+    policies.definePolicy("default", newNifPolicy(maxRequestBytes = 100))
+    policies.definePolicy("api", newNifPolicy(maxRequestBytes = 200))
+    policies.definePolicy("deep", newNifPolicy(maxRequestBytes = 300))
+    policies.definePolicy("exact", newNifPolicy(maxRequestBytes = 400))
+    policies.definePolicy("postOnly", newNifPolicy(maxRequestBytes = 500))
+    policies.addRoute NifPolicyRoute(pathPrefix: "/api", policy: "api")
+    policies.addRoute NifPolicyRoute(
+      pathPrefix: "/api/private", policy: "deep"
+    )
+    policies.addRoute NifPolicyRoute(
+      path: "/api/private/item", policy: "exact"
+    )
+    policies.addRoute NifPolicyRoute(
+      httpMethods: {rmPost}, path: "/method", policy: "postOnly"
+    )
+    check policies.resolveNifPolicy(
+      rmGet, "https://example.test/api/private/a?x=1"
+    ).maxRequestBytes == 300
+    check policies.resolveNifPolicy(
+      rmGet, "/api/private/item?x=1"
+    ).maxRequestBytes == 400
+    check policies.resolveNifPolicy(rmPost, "/method").maxRequestBytes == 500
+    check policies.resolveNifPolicy(rmGet, "/method").maxRequestBytes == 100
+    check policies.resolveNifPolicy(rmGet, "/api-evil").maxRequestBytes == 100
+
+  test "an explicit policy overrides route selection":
+    var policies = initNifPolicySet()
+    policies.definePolicy("small", newNifPolicy(maxRequestBytes = 64))
+    policies.definePolicy("large", newNifPolicy(maxRequestBytes = 4096))
+    policies.addRoute NifPolicyRoute(pathPrefix: "/", policy: "small")
+    check policies.resolveNifPolicy(
+      rmPost, "/upload", "large"
+    ).maxRequestBytes == 4096
+
+  test "per-request wire limits override the selected policy":
+    var observedRequestLimit = 0
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      observedRequestLimit = request.options.maxRequestBytes
+      return Response(status: 200, body: request.body, request: request)
+    var policies = initNifPolicySet()
+    policies.definePolicy("default", newNifPolicy(maxRequestBytes = 1024))
+    let client = newClient(newInProcessTransport(handler)).withNifPolicies(
+      policies
+    )
+    var requestOptions = RequestOptions(maxRequestBytes: 2048)
+    discard waitFor client.postNif(
+      "/", "true", options = requestOptions
+    )
+    check observedRequestLimit == 2048
+
+  test "selected policies reject oversized BIF before dispatch":
+    var calls = 0
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      inc calls
+      return Response(status: 200, body: request.body, request: request)
+    var policies = initNifPolicySet()
+    policies.definePolicy("tiny", newNifPolicy(maxRequestBytes = 16))
+    policies.addRoute NifPolicyRoute(path: "/tiny", policy: "tiny")
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).withNifPolicies(policies).postNif(
+      "/tiny", "(payload \"too large for sixteen bytes\")"
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeCodec
+    check calls == 0
+
+  test "policy-aware typed calls apply response and nesting bounds":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      let decoded = fromBif(
+        request.body, CreateRecord, defaultNifDecodeLimits()
+      )
+      return Response(
+        status: 200,
+        body: toBif(
+          RecordReply(id: 9, record: decoded), defaultNifEncodeLimits()
+        ),
+        request: request
+      )
+    var policies = initNifPolicySet()
+    policies.definePolicy("typed", newNifPolicy(
+      maxResponseBytes = 4096,
+      maxNestingDepth = 16
+    ))
+    policies.addRoute NifPolicyRoute(
+      httpMethods: {rmPost}, pathPrefix: "/typed", policy: "typed"
+    )
+    let value = CreateRecord(title: "routed", count: 2, enabled: true)
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).withNifPolicies(policies).postNif(
+      "typed/records?version=1", value, RecordReply
+    )
+    check outcome.isOk
+    check outcome.value == RecordReply(id: 9, record: value)
+
+  test "policy response limits run before typed decoding":
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      return Response(
+        status: 200,
+        body: toBif(
+          RecordReply(
+            id: 10,
+            record: CreateRecord(
+              title: repeat('x', 128), count: 1, enabled: true
+            )
+          ),
+          defaultNifEncodeLimits()
+        ),
+        request: request
+      )
+    var policies = initNifPolicySet()
+    policies.definePolicy("tinyResponse", newNifPolicy(
+      maxResponseBytes = 32
+    ))
+    policies.addRoute NifPolicyRoute(
+      path: "/tiny-response", policy: "tinyResponse"
+    )
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).withNifPolicies(policies).getNif(
+      "/tiny-response", RecordReply
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeBodyTooLarge
+
+  test "invalid policy configurations fail during construction":
+    var policies = initNifPolicySet()
+    expect ValueError:
+      policies.definePolicy("", defaultNifPolicy())
+    expect ValueError:
+      policies.addRoute NifPolicyRoute(path: "/", policy: "missing")
+    expect ValueError:
+      policies.addRoute NifPolicyRoute(policy: "default")
+    expect ValueError:
+      policies.addRoute NifPolicyRoute(
+        path: "/one", pathPrefix: "/", policy: "default"
+      )
+    policies.defaultPolicy = "missing"
+    expect ValueError:
+      discard newClient(newInProcessTransport(echoBif)).withNifPolicies(
+        policies
+      )
+    policies = initNifPolicySet()
+    policies.definePolicy("zero", newNifPolicy(maxRequestBytes = 0))
+    policies.defaultPolicy = "zero"
+    expect ValueError:
+      discard newClient(newInProcessTransport(echoBif)).withNifPolicies(
+        policies
+      )
+    policies = initNifPolicySet()
+    policies.definePolicy("badMultipart", newNifPolicy(
+      maxMetadataBytes = 0
+    ))
+    policies.defaultPolicy = "badMultipart"
+    expect ValueError:
+      discard newClient(newInProcessTransport(echoBif)).withNifPolicies(
+        policies
+      )
 
   test "nifCodec sends BIF v5 and returns canonical NIF":
     var wireBody = ""
@@ -54,6 +451,92 @@ suite "NIFKit codec integration":
     check bifToNif(wireBody) == "(command \"run\" 3)"
     check contentType == BifMediaType
     check decoded == "(reply \"ok\" 7)"
+
+  test "typed post converts Nim values directly through BIF":
+    var captured = CreateRecord()
+    var contentType = ""
+    var accept = ""
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      contentType = request.headers.get("content-type")
+      accept = request.headers.get("accept")
+      captured = fromBif(
+        request.body, CreateRecord, defaultNifDecodeLimits()
+      )
+      let reply = RecordReply(id: 7, record: captured)
+      return Response(
+        status: 200,
+        body: toBif(reply, defaultNifEncodeLimits()),
+        request: request
+      )
+    let value = CreateRecord(title: "NIF", count: 12, enabled: true)
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(handler)
+    ).postNif("/typed", value, RecordReply)
+    check outcome.isOk
+    check outcome.value == RecordReply(id: 7, record: value)
+    check captured == value
+    check contentType == BifMediaType
+    check accept == BifMediaType
+
+  test "typed direct helpers round-trip without NIF text allocation":
+    let value = RecordReply(
+      id: 9,
+      record: CreateRecord(title: "direct", count: -4, enabled: false)
+    )
+    let payload = encodeNifValue(value)
+    check payload.startsWith("NIFBIN\0\5")
+    check decodeNifValue(payload, RecordReply) == value
+
+  test "typed decode retains logical error paths":
+    let payload = nifToBif(
+      "(nifkit\\2Ddata 1 (object \"SmallCount\" (field \"count\" 999)))"
+    )
+    let outcome = tryDecodeNifValue(payload, SmallCount)
+    check outcome.isErr
+    check outcome.error.codecCode == "nkeTypeMismatch"
+    check outcome.error.codecPath == "$.count"
+    check outcome.error.codecOffset >= 0
+
+  test "typed strictness can be relaxed only by caller policy":
+    let payload = nifToBif(
+      "(nifkit\\2Ddata 1 (object \"SmallCount\"" &
+      " (field \"count\" 7) (field \"future\" true)))"
+    )
+    let strict = tryDecodeNifValue(payload, SmallCount)
+    check strict.isErr
+    check strict.error.codecCode == "nkeUnknownField"
+    check strict.error.codecPath == "$.future"
+
+    var options = defaultNifCodecOptions()
+    options.typedOptions.allowUnknownFields = true
+    let compatible = tryDecodeNifValue(payload, SmallCount, options)
+    check compatible.isOk
+    check compatible.value.count == 7
+
+  test "typed container object and reference limits are finite":
+    var options = defaultNifCodecOptions()
+    options.encodeLimits.maxContainerItems = 1
+    let container = tryEncodeNifValue(@[1, 2], options)
+    check container.isErr
+    check container.error.codecCode == "nkeTokenLimit"
+    check container.error.codecPath == "$"
+
+    options = defaultNifCodecOptions()
+    options.encodeLimits.maxObjectFields = 1
+    let objectFields = tryEncodeNifValue(
+      TwoFields(first: 1, second: 2), options
+    )
+    check objectFields.isErr
+    check objectFields.error.codecCode == "nkeTokenLimit"
+
+    options = defaultNifCodecOptions()
+    options.encodeLimits.maxTrackedReferences = 1
+    let references = tryEncodeNifValue(
+      RefNode(value: 1, next: RefNode(value: 2)), options
+    )
+    check references.isErr
+    check references.error.codecCode == "nkeTokenLimit"
+    check references.error.codecPath == "$.next"
 
   test "caller content types override the provisional BIF media type":
     var seenType = ""

@@ -2,22 +2,29 @@ name: CI
 
 on:
   push:
-    branches: [main, devel, "release/**"]
+    branches: [main, "release/**"]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Nim ${{ matrix.nim-version }}
+    name: ${{ matrix.os }} / Nim ${{ matrix.nim-version }} / ${{ matrix.memory-manager }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         nim-version: ["2.2.0", stable]
+        memory-manager: [arc, orc]
 
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Checkout FlowBrigade
         uses: actions/checkout@v4
@@ -30,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: puffball1567/nifkit
-          ref: v0.2.0
+          ref: v0.4.0
           path: _deps/nifkit
 
       - name: Checkout nim-zlib
@@ -45,8 +52,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-stew
-          ref: v0.4.2
+          ref: v0.5.1
           path: _deps/stew
+
+      - name: Checkout libcurl Nim bindings
+        uses: actions/checkout@v4
+        with:
+          repository: Araq/libcurl
+          ref: v1.0.0
+          path: _deps/libcurl
 
       - name: Checkout results
         uses: actions/checkout@v4
@@ -61,6 +75,41 @@ jobs:
           repository: status-im/nim-unittest2
           ref: v0.2.5
           path: _deps/unittest2
+
+      - name: Checkout faststreams
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-faststreams
+          ref: 50889cd16ec8771106cdd0eeea460039e8571e06
+          path: _deps/faststreams
+
+      - name: Checkout serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-serialization
+          ref: v0.5.3
+          path: _deps/serialization
+
+      - name: Checkout CBOR serialization
+        uses: actions/checkout@v4
+        with:
+          repository: vacp2p/nim-cbor-serialization
+          ref: v0.4.2
+          path: _deps/cbor_serialization
+
+      - name: Checkout Protobuf serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-protobuf-serialization
+          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          path: _deps/protobuf_serialization
+
+      - name: Checkout npeg
+        uses: actions/checkout@v4
+        with:
+          repository: zevv/npeg
+          ref: 1.3.0
+          path: _deps/npeg
 
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
@@ -75,47 +124,153 @@ jobs:
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
+          nimble develop -y -a:_deps/libcurl
+          nimble develop -y -a:_deps/faststreams
+          nimble develop -y -a:_deps/serialization
+          nimble develop -y -a:_deps/npeg
+          nimble develop -y -a:_deps/cbor_serialization
+          nimble develop -y -a:_deps/protobuf_serialization
 
-      - name: Generate Nim 2.2 dependency paths
-        if: matrix.nim-version == '2.2.0'
+      - name: Generate pinned dependency paths
         run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
 
-      - name: Resolve dependencies
-        if: matrix.nim-version == 'stable'
-        run: nimble --legacy --offline setup
-
-      - name: Check package and public entry point
-        run: |
-          nimble check
+      - name: Check package metadata
+        run: nimble check
 
       - name: Check public entry point
         if: matrix.nim-version == 'stable'
         run: |
-          nim check --mm:arc --path:src src/joubako.nim
-          nim check --mm:arc --path:src examples/basic.nim
-          nim check --mm:arc --path:src examples/frameworks/client.nim
-          nim check --mm:arc --path:src benchmarks/core_bench.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src src/joubako.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src examples/basic.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/core_bench.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/network_bench.nim
+          nim check --threads:on --mm:${{ matrix.memory-manager }} --path:src tests/tsan_probe.nim
 
-      - name: Run tests with Nim 2.2 Nimble
-        if: matrix.nim-version == '2.2.0'
+      - name: Run ARC tests with Nim 2.2 Nimble
+        if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'arc'
         run: nimble --offline test
 
-      - name: Run tests with stable Nimble
-        if: matrix.nim-version == 'stable'
+      - name: Run ORC tests with Nim 2.2 Nimble
+        if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'orc'
+        run: nimble --offline testOrc
+
+      - name: Run ARC tests with stable Nimble
+        if: matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         run: nimble --legacy --offline test
 
-      - name: Run hardening fuzz and soak probes
-        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable'
+      - name: Run ORC tests with stable Nimble
+        if: matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        run: nimble --legacy --offline testOrc
+
+      - name: Run Linux ARC AddressSanitizer probes with leak detection
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          LSAN_OPTIONS: exitcode=99
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asan
+
+      - name: Run Linux ORC AddressSanitizer probes with leak detection
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          LSAN_OPTIONS: exitcode=99
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asanOrc
+
+      - name: Run macOS ARC AddressSanitizer probes
+        if: matrix.os == 'macos-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asan
+
+      - name: Run macOS ORC AddressSanitizer probes
+        if: matrix.os == 'macos-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asanOrc
+
+      - name: Run Windows Clang ARC AddressSanitizer probes
+        if: matrix.os == 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asan
+
+      - name: Run Windows Clang ORC AddressSanitizer probes
+        if: matrix.os == 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+          JOUBAKO_FUZZ_ITERATIONS: 2000
+        run: nimble --legacy --offline asanOrc
+
+      - name: Run Linux and macOS ARC UndefinedBehaviorSanitizer probes
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          JOUBAKO_FUZZ_ITERATIONS: 1000
+        run: nimble --legacy --offline ubsan
+
+      - name: Run Linux and macOS ORC UndefinedBehaviorSanitizer probes
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          JOUBAKO_FUZZ_ITERATIONS: 1000
+        run: nimble --legacy --offline ubsanOrc
+
+      - name: Run Linux ARC standalone LeakSanitizer probe
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          LSAN_OPTIONS: detect_leaks=1:exitcode=99
+        run: nimble --legacy --offline lsan
+
+      - name: Run Linux ORC standalone LeakSanitizer probe
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          LSAN_OPTIONS: detect_leaks=1:exitcode=99
+        run: nimble --legacy --offline lsanOrc
+
+      - name: Run Linux and macOS ARC ThreadSanitizer probe
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=99
+          JOUBAKO_THREAD_ITERATIONS: 500
+        run: nimble --legacy --offline tsan
+
+      - name: Run Linux and macOS ORC ThreadSanitizer probe
+        if: matrix.os != 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=99
+          JOUBAKO_THREAD_ITERATIONS: 500
+        run: nimble --legacy --offline tsanOrc
+
+      - name: Run ARC hardening fuzz and soak probes
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         run: |
           nimble --legacy --offline fuzz
           nimble --legacy --offline soak
 
+      - name: Run ORC hardening fuzz and soak probes
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'orc'
+        run: |
+          nimble --legacy --offline fuzzOrc
+          nimble --legacy --offline soakOrc
+
   ssl:
-    name: Linux SSL build
+    name: Linux SSL build / ${{ matrix.memory-manager }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        memory-manager: [arc, orc]
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Checkout FlowBrigade
         uses: actions/checkout@v4
@@ -128,7 +283,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: puffball1567/nifkit
-          ref: v0.2.0
+          ref: v0.4.0
           path: _deps/nifkit
 
       - name: Checkout nim-zlib
@@ -143,8 +298,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-stew
-          ref: v0.4.2
+          ref: v0.5.1
           path: _deps/stew
+
+      - name: Checkout libcurl Nim bindings
+        uses: actions/checkout@v4
+        with:
+          repository: Araq/libcurl
+          ref: v1.0.0
+          path: _deps/libcurl
 
       - name: Checkout results
         uses: actions/checkout@v4
@@ -160,6 +322,41 @@ jobs:
           ref: v0.2.5
           path: _deps/unittest2
 
+      - name: Checkout faststreams
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-faststreams
+          ref: 50889cd16ec8771106cdd0eeea460039e8571e06
+          path: _deps/faststreams
+
+      - name: Checkout serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-serialization
+          ref: v0.5.3
+          path: _deps/serialization
+
+      - name: Checkout CBOR serialization
+        uses: actions/checkout@v4
+        with:
+          repository: vacp2p/nim-cbor-serialization
+          ref: v0.4.2
+          path: _deps/cbor_serialization
+
+      - name: Checkout Protobuf serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-protobuf-serialization
+          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          path: _deps/protobuf_serialization
+
+      - name: Checkout npeg
+        uses: actions/checkout@v4
+        with:
+          repository: zevv/npeg
+          ref: 1.3.0
+          path: _deps/npeg
+
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
@@ -173,25 +370,46 @@ jobs:
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
+          nimble develop -y -a:_deps/libcurl
+          nimble develop -y -a:_deps/faststreams
+          nimble develop -y -a:_deps/serialization
+          nimble develop -y -a:_deps/npeg
+          nimble develop -y -a:_deps/cbor_serialization
+          nimble develop -y -a:_deps/protobuf_serialization
 
-      - name: Resolve dependencies
-        run: nimble --legacy --offline setup
+      - name: Generate pinned dependency paths
+        run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
 
-      - name: Build and test with SSL
+      - name: Build and test public SSL surfaces
         run: |
-          nim c -d:ssl --mm:arc --path:src src/joubako.nim
-          nim c -d:ssl --mm:arc --path:src examples/frameworks/client.nim
-          nim c -r -d:ssl --mm:arc --path:src tests/test_tls_options.nim
-          nim c -r -d:ssl --mm:arc --path:src tests/test_http.nim
-          nimble --legacy --offline testSsl
+          nim c -d:ssl --mm:${{ matrix.memory-manager }} --path:src src/joubako.nim
+          nim c -d:ssl --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
+          nim c -r -d:ssl --mm:${{ matrix.memory-manager }} --path:src tests/test_tls_options.nim
+          nim c -r -d:ssl --mm:${{ matrix.memory-manager }} --path:src tests/test_http.nim
+
+      - name: Run ARC secure transport integration tests
+        if: matrix.memory-manager == 'arc'
+        run: nimble --legacy --offline testSsl
+
+      - name: Run ORC secure transport integration tests
+        if: matrix.memory-manager == 'orc'
+        run: nimble --legacy --offline testSslOrc
 
   docker-e2e:
-    name: Linux Docker E2E
+    name: Linux Docker E2E / ${{ matrix.memory-manager }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        memory-manager: [arc, orc]
+    env:
+      JOUBAKO_MEMORY_MANAGER: ${{ matrix.memory-manager }}
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Build and run cross-container suite
         run: |
@@ -209,11 +427,17 @@ jobs:
         run: docker compose -f tests/e2e/compose.yml down --volumes --remove-orphans
 
   valgrind:
-    name: Linux Valgrind leak probe
+    name: Linux Valgrind leak probe / ${{ matrix.memory-manager }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        memory-manager: [arc, orc]
     steps:
       - name: Checkout Joubako
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Checkout FlowBrigade
         uses: actions/checkout@v4
@@ -226,7 +450,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: puffball1567/nifkit
-          ref: v0.2.0
+          ref: v0.4.0
           path: _deps/nifkit
 
       - name: Checkout nim-zlib
@@ -241,8 +465,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-stew
-          ref: v0.4.2
+          ref: v0.5.1
           path: _deps/stew
+
+      - name: Checkout libcurl Nim bindings
+        uses: actions/checkout@v4
+        with:
+          repository: Araq/libcurl
+          ref: v1.0.0
+          path: _deps/libcurl
 
       - name: Checkout results
         uses: actions/checkout@v4
@@ -258,6 +489,41 @@ jobs:
           ref: v0.2.5
           path: _deps/unittest2
 
+      - name: Checkout faststreams
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-faststreams
+          ref: 50889cd16ec8771106cdd0eeea460039e8571e06
+          path: _deps/faststreams
+
+      - name: Checkout serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-serialization
+          ref: v0.5.3
+          path: _deps/serialization
+
+      - name: Checkout CBOR serialization
+        uses: actions/checkout@v4
+        with:
+          repository: vacp2p/nim-cbor-serialization
+          ref: v0.4.2
+          path: _deps/cbor_serialization
+
+      - name: Checkout Protobuf serialization
+        uses: actions/checkout@v4
+        with:
+          repository: status-im/nim-protobuf-serialization
+          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          path: _deps/protobuf_serialization
+
+      - name: Checkout npeg
+        uses: actions/checkout@v4
+        with:
+          repository: zevv/npeg
+          ref: 1.3.0
+          path: _deps/npeg
+
       - name: Setup Nim
         uses: jiro4989/setup-nim-action@v2
         with:
@@ -271,11 +537,25 @@ jobs:
           nimble develop -y -a:_deps/unittest2
           nimble develop -y -a:_deps/stew
           nimble develop -y -a:_deps/zlib
+          nimble develop -y -a:_deps/libcurl
+          nimble develop -y -a:_deps/faststreams
+          nimble develop -y -a:_deps/serialization
+          nimble develop -y -a:_deps/npeg
+          nimble develop -y -a:_deps/cbor_serialization
+          nimble develop -y -a:_deps/protobuf_serialization
+
+      - name: Generate pinned dependency paths
+        run: nim r --out:${{ runner.temp }}/joubako-write-ci-paths .github/write_ci_paths.nim
 
       - name: Install Valgrind
         run: |
           sudo apt-get update
           sudo apt-get install -y valgrind
 
-      - name: Run ARC success-path lifecycle leak probe
+      - name: Run ARC lifecycle leak probes
+        if: matrix.memory-manager == 'arc'
         run: nimble --legacy --offline leak
+
+      - name: Run ORC lifecycle leak probes
+        if: matrix.memory-manager == 'orc'
+        run: nimble --legacy --offline leakOrc

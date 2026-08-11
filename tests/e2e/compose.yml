@@ -34,9 +34,10 @@ services:
     build:
       context: ../..
       dockerfile: tests/e2e/Dockerfile.client
+      args:
+        JOUBAKO_MEMORY_MANAGER: ${JOUBAKO_MEMORY_MANAGER:-arc}
     depends_on:
       backend:
         condition: service_healthy
       redirect:
         condition: service_healthy
-

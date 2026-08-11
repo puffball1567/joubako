@@ -162,6 +162,28 @@ proc serveRawResponse(
     return
   await socket.send(rawResponse)
 
+proc serveRangeResponse(
+    server: AsyncSocket;
+    captured: Future[string]
+): Future[void] {.async.} =
+  let socket = await server.accept()
+  defer: socket.close()
+  var request = ""
+  while "\r\n\r\n" notin request:
+    let chunk = await socket.recv(4096)
+    if chunk.len == 0:
+      return
+    request.add chunk
+  captured.complete(request)
+  await socket.send(
+    "HTTP/1.1 206 Partial Content\r\n" &
+    "Content-Range: bytes 7-11/12\r\n" &
+    "Content-Length: 5\r\n" &
+    "Content-Type: application/octet-stream\r\n" &
+    "Connection: close\r\n\r\n" &
+    "-tail"
+  )
+
 proc serveRedirect(
     server: AsyncSocket;
     location: string
@@ -1045,6 +1067,33 @@ suite "Joubako HTTP transport":
     check readFile(outputPath) == "binary\0payload"
     server.close()
 
+  test "resumeDownloadToFile interoperates with a real Range response":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let captured = newFuture[string]("test_http.rangeRequest")
+    let serving = serveRangeResponse(server, captured)
+    let outputPath = getTempDir() /
+      ("joubako-resume-" & $getCurrentProcessId() & ".bin")
+    writeFile(outputPath, "partial")
+    defer:
+      if fileExists(outputPath): removeFile(outputPath)
+    let client = newClient(newHttpTransport())
+    discard waitFor client.resumeDownloadToFile(
+      "http://127.0.0.1:" & $int(port) & "/asset",
+      outputPath,
+      "\"asset-v3\""
+    )
+    waitFor serving
+    check readFile(outputPath) == "partial-tail"
+    let request = captured.read.toLowerAscii
+    check "range: bytes=7-" in request
+    check "if-range: \"asset-v3\"" in request
+    check "accept-encoding: identity" in request
+    server.close()
+
   test "303 redirects rewrite POST to GET and remove body headers":
     let captured = waitFor exerciseRedirectMethod(303, "payload")
     check captured.requestLine.startsWith("GET /target ")
@@ -1223,6 +1272,24 @@ suite "Joubako HTTP transport":
         "http://127.0.0.1:1/upload",
         [formFilePath("file", sourcePath)],
         options = options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeBodyTooLarge
+
+  test "streamed multipart enforces a file-part preflight limit":
+    let sourcePath = getTempDir() /
+      ("joubako-upload-part-limit-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(sourcePath):
+        removeFile(sourcePath)
+    writeFile(sourcePath, "12345678")
+    var file = formFilePath("file", sourcePath)
+    file.maxBytes = 7
+    let client = newClient(newHttpTransport())
+    try:
+      discard waitFor client.postMultipart(
+        "http://127.0.0.1:1/upload", [file]
       )
       fail()
     except JoubakoError as error:
