@@ -1,8 +1,8 @@
 .git
-.github
+.github/*
+!.github/write_ci_paths.nim
 nimble.develop
 nimble.paths
 nimbledeps
 nimcache
 tests/testdata
-
