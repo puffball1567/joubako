@@ -6,7 +6,7 @@
 
 import std/[asyncdispatch, strutils, tables, uri]
 import nifkit
-import ./[client, codec, result, types]
+import ./[client, codec, result, transport, types]
 
 const BifMediaType* = "application/x-nif-bif"
 
@@ -23,6 +23,9 @@ const
   DefaultNifContainerItems* = 10_000
   DefaultNifObjectFields* = 10_000
   DefaultNifTrackedReferences* = 10_000
+  DefaultNifMetadataBytes* = 64 * 1024
+  DefaultNifUploadBytes* = 128 * 1024 * 1024
+  DefaultNifMultipartBytes* = 129 * 1024 * 1024
 
 type
   NifCodecOptions* = object
@@ -30,12 +33,21 @@ type
     decodeLimits*: CodecLimits
     typedOptions*: TypedCodecOptions
 
+  NifMultipartLimits* = object
+    ## Metadata, file payload, and complete multipart wire budgets are
+    ## independent. Runtime accounting is required by default.
+    maxMetadataBytes*: int
+    maxUploadBytes*: int64
+    maxMultipartBytes*: int
+    requireRuntimeAccounting*: bool
+
   NifPolicy* = object
     ## Wire limits are kept beside codec limits so one selected policy bounds
     ## both transport buffering and NIFKit conversion.
     maxRequestBytes*: int
     maxResponseBytes*: int
     codecOptions*: NifCodecOptions
+    multipartLimits*: NifMultipartLimits
 
   NifPolicyRoute* = object
     ## An empty method set matches every method. Exact paths take precedence
@@ -85,11 +97,33 @@ proc defaultNifCodecOptions*(): NifCodecOptions =
     typedOptions: defaultTypedCodecOptions()
   )
 
+proc defaultNifMultipartLimits*(): NifMultipartLimits =
+  NifMultipartLimits(
+    maxMetadataBytes: DefaultNifMetadataBytes,
+    maxUploadBytes: DefaultNifUploadBytes,
+    maxMultipartBytes: DefaultNifMultipartBytes,
+    requireRuntimeAccounting: true
+  )
+
+proc newNifMultipartLimits*(
+    maxMetadataBytes = DefaultNifMetadataBytes;
+    maxUploadBytes = DefaultNifUploadBytes.int64;
+    maxMultipartBytes = DefaultNifMultipartBytes;
+    requireRuntimeAccounting = true
+): NifMultipartLimits =
+  NifMultipartLimits(
+    maxMetadataBytes: maxMetadataBytes,
+    maxUploadBytes: maxUploadBytes,
+    maxMultipartBytes: maxMultipartBytes,
+    requireRuntimeAccounting: requireRuntimeAccounting
+  )
+
 proc defaultNifPolicy*(): NifPolicy =
   NifPolicy(
     maxRequestBytes: DefaultNifEncodedBytes,
     maxResponseBytes: DefaultNifInputBytes,
-    codecOptions: defaultNifCodecOptions()
+    codecOptions: defaultNifCodecOptions(),
+    multipartLimits: defaultNifMultipartLimits()
   )
 
 proc newNifPolicy*(
@@ -97,7 +131,11 @@ proc newNifPolicy*(
     maxResponseBytes = DefaultNifInputBytes;
     maxNestingDepth = DefaultNifNestingDepth;
     maxTokens = DefaultNifTokens;
-    maxPoolBytes = DefaultNifPoolBytes
+    maxPoolBytes = DefaultNifPoolBytes;
+    maxMetadataBytes = DefaultNifMetadataBytes;
+    maxUploadBytes = DefaultNifUploadBytes.int64;
+    maxMultipartBytes = DefaultNifMultipartBytes;
+    requireRuntimeAccounting = true
 ): NifPolicy =
   ## Creates the common, concise network policy shown in configuration files.
   ## Less common NIFKit limits remain independently adjustable through the
@@ -105,6 +143,12 @@ proc newNifPolicy*(
   result = defaultNifPolicy()
   result.maxRequestBytes = maxRequestBytes
   result.maxResponseBytes = maxResponseBytes
+  result.multipartLimits = newNifMultipartLimits(
+    maxMetadataBytes,
+    maxUploadBytes,
+    maxMultipartBytes,
+    requireRuntimeAccounting
+  )
   result.codecOptions.encodeLimits.maxInputBytes = maxRequestBytes
   result.codecOptions.encodeLimits.maxOutputBytes = maxRequestBytes
   result.codecOptions.decodeLimits.maxInputBytes = maxResponseBytes
@@ -154,6 +198,13 @@ proc withNifPolicies*(client: Client; policies: NifPolicySet): NifClient =
       raise newException(
         ValueError,
         "NIF policy wire limits must be positive or negative: " & name
+      )
+    if policy.multipartLimits.maxMetadataBytes == 0 or
+        policy.multipartLimits.maxUploadBytes == 0 or
+        policy.multipartLimits.maxMultipartBytes == 0:
+      raise newException(
+        ValueError,
+        "NIF multipart limits must be positive or negative: " & name
       )
   for route in policies.routes:
     if route.path.len == 0 and route.pathPrefix.len == 0:
@@ -682,3 +733,213 @@ template definePolicyAwareNifMethod(name, requestMethod: untyped) =
 definePolicyAwareNifMethod(postNif, rmPost)
 definePolicyAwareNifMethod(putNif, rmPut)
 definePolicyAwareNifMethod(patchNif, rmPatch)
+
+func boundedMultipartOptions(
+    options: RequestOptions;
+    maxMultipartBytes: int
+): RequestOptions =
+  result = options
+  if maxMultipartBytes < 0:
+    if result.maxRequestBytes == 0:
+      result.maxRequestBytes = -1
+  elif result.maxRequestBytes <= 0 or
+      maxMultipartBytes < result.maxRequestBytes:
+    result.maxRequestBytes = maxMultipartBytes
+
+func metadataCodecOptions(
+    codecOptions: NifCodecOptions;
+    maxMetadataBytes: int
+): NifCodecOptions =
+  result = codecOptions
+  result.encodeLimits.maxInputBytes = maxMetadataBytes
+  result.encodeLimits.maxOutputBytes = maxMetadataBytes
+
+proc sendNifMultipart[TMetadata](
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    metadata: TMetadata;
+    file: MultipartPart;
+    metadataName: string;
+    headers: Headers;
+    options: RequestOptions;
+    limits: NifMultipartLimits;
+    codecOptions: NifCodecOptions
+): Future[JResult[Response]] {.async.} =
+  if client == nil or client.transport == nil:
+    return err[Response](newJoubakoError(
+      jeInvalidRequest, "client has no transport", path
+    ))
+  if metadataName.len == 0 or
+      metadataName.contains({'\0', '\r', '\n', '"'}):
+    return err[Response](newJoubakoError(
+      jeInvalidRequest, "invalid NIF multipart metadata field name", path
+    ))
+  if file.filePath.len == 0 or file.body.len > 0 or file.filename.len == 0:
+    return err[Response](newJoubakoError(
+      jeInvalidRequest,
+      "NIF multipart upload requires one file-backed part",
+      path
+    ))
+  if limits.maxMetadataBytes == 0 or limits.maxUploadBytes == 0 or
+      limits.maxMultipartBytes == 0:
+    return err[Response](newJoubakoError(
+      jeInvalidRequest,
+      "NIF multipart limits must be positive or negative",
+      path
+    ))
+  if limits.requireRuntimeAccounting and
+      not client.transport.supportsRuntimeMultipartLimits():
+    return err[Response](newJoubakoError(
+      jeInvalidRequest,
+      "transport cannot enforce multipart limits while streaming",
+      path
+    ))
+  if headers.contains("content-type"):
+    return err[Response](newJoubakoError(
+      jeInvalidRequest,
+      "NIF multipart content type and boundary are generated automatically",
+      path
+    ))
+
+  let encoded = tryEncodeNifValue(
+    metadata,
+    codecOptions.metadataCodecOptions(limits.maxMetadataBytes),
+    path
+  )
+  if encoded.isErr:
+    return err[Response](encoded.error)
+  if limits.maxMetadataBytes >= 0 and
+      encoded.value.len > limits.maxMetadataBytes:
+    return err[Response](newJoubakoError(
+      jeBodyTooLarge, "NIF multipart metadata exceeded its limit", path
+    ))
+
+  var uploadPart = file
+  uploadPart.maxBytes = limits.maxUploadBytes
+  let metadataPart = MultipartPart(
+    name: metadataName,
+    filename: "metadata.bif",
+    contentType: BifMediaType,
+    body: encoded.value,
+    maxBytes: limits.maxMetadataBytes.int64
+  )
+  let response = asyncdispatch.await client.requestMultipart(
+    httpMethod,
+    path,
+    @[metadataPart, uploadPart],
+    headers,
+    options.boundedMultipartOptions(limits.maxMultipartBytes)
+  )
+  return response
+
+proc postNifMultipart*[TMetadata](
+    client: Client;
+    path: string;
+    metadata: TMetadata;
+    file: MultipartPart;
+    metadataName = "metadata";
+    headers = initHeaders();
+    options = RequestOptions();
+    limits = defaultNifMultipartLimits();
+    codecOptions = defaultNifCodecOptions()
+): Future[JResult[Response]] =
+  client.sendNifMultipart(
+    rmPost,
+    path,
+    metadata,
+    file,
+    metadataName,
+    headers,
+    options,
+    limits,
+    codecOptions
+  )
+
+proc postNifMultipart*[TMetadata, TResponse](
+    client: Client;
+    path: string;
+    metadata: TMetadata;
+    file: MultipartPart;
+    _: typedesc[TResponse];
+    metadataName = "metadata";
+    headers = initHeaders();
+    options = RequestOptions();
+    limits = defaultNifMultipartLimits();
+    codecOptions = defaultNifCodecOptions()
+): Future[JResult[TResponse]] {.async.} =
+  var requestHeaders = headers
+  if not requestHeaders.contains("accept"):
+    requestHeaders.set("accept", BifMediaType)
+  let response = asyncdispatch.await client.sendNifMultipart(
+    rmPost,
+    path,
+    metadata,
+    file,
+    metadataName,
+    requestHeaders,
+    options,
+    limits,
+    codecOptions
+  )
+  if response.isErr:
+    return err[TResponse](response.error)
+  return tryDecodeNifValueResponse(
+    response.value, TResponse, codecOptions
+  )
+
+proc postNifMultipart*[TMetadata](
+    client: NifClient;
+    path: string;
+    metadata: TMetadata;
+    file: MultipartPart;
+    metadataName = "metadata";
+    headers = initHeaders();
+    options = RequestOptions();
+    policyName = ""
+): Future[JResult[Response]] =
+  let policy = client.nifPolicies.resolveNifPolicy(
+    rmPost, path, policyName
+  )
+  var effectiveOptions = options
+  if effectiveOptions.maxResponseBytes == 0:
+    effectiveOptions.maxResponseBytes = policy.maxResponseBytes
+  client.client.postNifMultipart(
+    path,
+    metadata,
+    file,
+    metadataName,
+    headers,
+    effectiveOptions,
+    policy.multipartLimits,
+    policy.effectiveCodecOptions()
+  )
+
+proc postNifMultipart*[TMetadata, TResponse](
+    client: NifClient;
+    path: string;
+    metadata: TMetadata;
+    file: MultipartPart;
+    _: typedesc[TResponse];
+    metadataName = "metadata";
+    headers = initHeaders();
+    options = RequestOptions();
+    policyName = ""
+): Future[JResult[TResponse]] =
+  let policy = client.nifPolicies.resolveNifPolicy(
+    rmPost, path, policyName
+  )
+  var effectiveOptions = options
+  if effectiveOptions.maxResponseBytes == 0:
+    effectiveOptions.maxResponseBytes = policy.maxResponseBytes
+  client.client.postNifMultipart(
+    path,
+    metadata,
+    file,
+    TResponse,
+    metadataName,
+    headers,
+    effectiveOptions,
+    policy.multipartLimits,
+    policy.effectiveCodecOptions()
+  )

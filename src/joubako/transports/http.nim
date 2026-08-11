@@ -341,9 +341,21 @@ proc multipartWireSizeUpperBound(request: Request): int64 =
             raise error.asJoubakoError(jeStream, request.url)
         else:
           int64(part.body.len)
+      if part.maxBytes > 0 and contentSize > part.maxBytes:
+        raise newJoubakoError(
+          jeBodyTooLarge,
+          "multipart part exceeded its configured limit",
+          request.url
+        )
       result.addMultipartSize(contentSize, request)
       result.addMultipartSize(2, request)
     else:
+      if part.maxBytes > 0 and part.body.len.int64 > part.maxBytes:
+        raise newJoubakoError(
+          jeBodyTooLarge,
+          "multipart part exceeded its configured limit",
+          request.url
+        )
       result.addMultipartSize(int64(4 + part.body.len + 2), request)
   result.addMultipartSize(int64(2 + boundaryLength + 4), request)
 

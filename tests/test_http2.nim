@@ -1,11 +1,16 @@
 import std/[asyncdispatch, monotimes, os, strutils, times, unittest]
-import joubako/[client, cookiejar, multipart, result, types, uploadstream]
+import joubako/[client, cookiejar, multipart, nifcodec, result, types,
+  uploadstream]
 import joubako/transports/http2
 
 const
   h2Host = "127.0.0.1"
   h2Port = 18_942
   h2Base = "http://" & h2Host & ":" & $h2Port
+
+type UploadMetadata = object
+  title: string
+  visibility: string
 
 proc options(): RequestOptions =
   result = defaultRequestOptions()
@@ -195,6 +200,32 @@ suite "HTTP/2 transport":
     check progress[^1][0] > getFileSize(uploadPath)
     waitFor transport.close()
 
+  test "NIF multipart streams a typed bounded metadata and file pair":
+    let uploadPath = getTempDir() / "joubako-http2-nif-multipart.png"
+    writeFile(uploadPath, "PNG-payload")
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    let api = newClient(transport, h2Base)
+    let outcome = waitFor api.postNifMultipart(
+      "/multipart",
+      UploadMetadata(title: "photo", visibility: "public"),
+      formFilePath("file", uploadPath, contentType = "image/png")
+    )
+    check outcome.isOk
+    if outcome.isOk:
+      check "name=\"metadata\"" in outcome.value.body
+      check "filename=\"metadata.bif\"" in outcome.value.body
+      check BifMediaType in outcome.value.body
+      check "NIFBIN\0\5" in outcome.value.body
+      check "filename=\"joubako-http2-nif-multipart.png\"" in
+        outcome.value.body
+      check "PNG-payload" in outcome.value.body
+      check outcome.value.request.options.maxRequestBytes ==
+        DefaultNifMultipartBytes
+    waitFor transport.close()
+
   test "reopens file-backed multipart parts across 307 redirects":
     let uploadPath = getTempDir() / "joubako-http2-multipart-redirect.txt"
     writeFile(uploadPath, "redirected-file")
@@ -303,6 +334,18 @@ suite "HTTP/2 transport":
     ]
     check errorKind(transport.send(oversizedRequest)) == jeBodyTooLarge
 
+    var partLimitedRequest = request("/multipart", rmPost)
+    partLimitedRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "part-limit.txt",
+        contentType: "text/plain",
+        filePath: uploadPath,
+        maxBytes: 7
+      )
+    ]
+    check errorKind(transport.send(partLimitedRequest)) == jeBodyTooLarge
+
     var conflictingRequest = request("/multipart", rmPost, "body")
     conflictingRequest.multipartParts = @[
       MultipartPart(name: "field", body: "value")
@@ -341,6 +384,35 @@ suite "HTTP/2 transport":
       )
     ]
     check errorKind(transport.send(multipartRequest)) == jeCancelled
+    waitFor transport.close()
+
+  test "detects a multipart file truncated while it is streaming":
+    let uploadPath = getTempDir() / "joubako-http2-multipart-truncated.txt"
+    writeFile(uploadPath, repeat('x', 512 * 1024))
+    defer:
+      if fileExists(uploadPath):
+        removeFile(uploadPath)
+    let transport = newHttp2Transport(allowH2c = true)
+    var truncated = false
+    var opts = options()
+    opts.onUploadProgress = proc(done, total: int64) =
+      if done > 0 and not truncated:
+        truncated = true
+        writeFile(uploadPath, "short")
+    var multipartRequest = request(
+      "/slow-upload", rmPost, requestOptions = opts
+    )
+    multipartRequest.multipartParts = @[
+      MultipartPart(
+        name: "disk-file",
+        filename: "truncated.txt",
+        contentType: "text/plain",
+        filePath: uploadPath,
+        maxBytes: 512 * 1024
+      )
+    ]
+    check errorKind(transport.send(multipartRequest)) == jeStream
+    check truncated
     waitFor transport.close()
 
   test "preserves repeated response headers and status errors as responses":

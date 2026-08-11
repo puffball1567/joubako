@@ -1277,6 +1277,24 @@ suite "Joubako HTTP transport":
     except JoubakoError as error:
       check error.kind == jeBodyTooLarge
 
+  test "streamed multipart enforces a file-part preflight limit":
+    let sourcePath = getTempDir() /
+      ("joubako-upload-part-limit-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(sourcePath):
+        removeFile(sourcePath)
+    writeFile(sourcePath, "12345678")
+    var file = formFilePath("file", sourcePath)
+    file.maxBytes = 7
+    let client = newClient(newHttpTransport())
+    try:
+      discard waitFor client.postMultipart(
+        "http://127.0.0.1:1/upload", [file]
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeBodyTooLarge
+
   test "missing streamed multipart files are structured stream errors":
     let client = newClient(newHttpTransport())
     try:

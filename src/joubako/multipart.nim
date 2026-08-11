@@ -6,19 +6,22 @@ func formField*(name, value: string): MultipartPart =
 
 func formFile*(
     name, filename, body: string;
-    contentType = "application/octet-stream"
+    contentType = "application/octet-stream";
+    maxBytes = 0'i64
 ): MultipartPart =
   MultipartPart(
     name: name,
     filename: filename,
     contentType: contentType,
-    body: body
+    body: body,
+    maxBytes: maxBytes
   )
 
 func formFilePath*(
     name, filePath: string;
     filename = "";
-    contentType = "application/octet-stream"
+    contentType = "application/octet-stream";
+    maxBytes = 0'i64
 ): MultipartPart =
   ## Describes a file that will be opened and streamed during HTTP dispatch.
   ## The path itself is never placed in the multipart headers.
@@ -32,7 +35,8 @@ func formFilePath*(
     name: name,
     filename: transmittedName,
     contentType: contentType,
-    filePath: filePath
+    filePath: filePath,
+    maxBytes: maxBytes
   )
 
 proc multipartBoundary*(): string =

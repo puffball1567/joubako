@@ -35,6 +35,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Named NIF policies with method, exact-path, and longest-prefix routing so
   uploads and ordinary API calls can use different transport and codec
   budgets without changing NIFKit's policy-free defaults.
+- Typed `postNifMultipart` uploads with zero-configuration recommended limits
+  for BIF metadata, streamed files, and complete multipart wire size; HTTP/2
+  additionally accounts file reads and total upload progress at runtime and
+  fails closed when that guarantee is required but unavailable.
 
 ### Fixed
 

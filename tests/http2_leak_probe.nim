@@ -45,7 +45,8 @@ proc main() {.async.} =
           name: "file",
           filename: "probe.txt",
           contentType: "text/plain",
-          filePath: uploadPath
+          filePath: uploadPath,
+          maxBytes: getFileSize(uploadPath)
         )
       ],
       options: options
