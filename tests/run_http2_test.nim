@@ -1,4 +1,6 @@
-import std/[net, os, osproc]
+import std/[monotimes, net, os, osproc, times]
+
+const ServerStartupTimeout = initDuration(seconds = 30)
 
 proc main(): int =
   if paramCount() != 1:
@@ -17,7 +19,11 @@ proc main(): int =
     server.close()
 
   var ready = false
-  for _ in 0 ..< 100:
+  let startupDeadline = getMonoTime() + ServerStartupTimeout
+  while getMonoTime() < startupDeadline:
+    if not server.running:
+      quit "HTTP/2 test server exited during startup with code " &
+        $server.peekExitCode()
     var socket = newSocket()
     try:
       socket.connect("127.0.0.1", Port(18_942))
@@ -26,10 +32,11 @@ proc main(): int =
       break
     except OSError:
       socket.close()
-      sleep(20)
+      sleep(25)
 
   if not ready:
-    quit "HTTP/2 test server did not become ready"
+    quit "HTTP/2 test server did not become ready within " &
+      $ServerStartupTimeout.inSeconds & " seconds"
   execCmd(paramStr(1))
 
 quit main()
