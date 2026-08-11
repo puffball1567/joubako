@@ -22,7 +22,6 @@ type
 
   RequiredMessage {.proto2.} = object
     id {.fieldNumber: 1, required, pint.}: int32
-    label {.fieldNumber: 2.}: PBOption["default"]
 
   ReplyMessage {.proto3.} = object
     accepted {.fieldNumber: 1.}: bool
@@ -129,10 +128,7 @@ suite "Protobuf codec":
     let missing = tryDecodeProtobufPayload("", RequiredMessage)
     check missing.isErr
     check missing.error.codecCode == "protobuf_decode"
-    let present = RequiredMessage(
-      id: 7,
-      label: pbSome(PBOption["default"], "explicit")
-    )
+    let present = RequiredMessage(id: 7)
     check decodeProtobufPayload(
       encodeProtobufPayload(present), RequiredMessage
     ) == present

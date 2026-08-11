@@ -17,23 +17,26 @@ RUN git clone --depth 1 --branch v0.5.0 \
     && git checkout v1.0.0 \
     && git clone https://github.com/status-im/nim-faststreams.git /deps/faststreams \
     && cd /deps/faststreams \
-    && git checkout 50889cd16ec8771106cdd0eeea460039e8571e06
+    && git checkout 50889cd16ec8771106cdd0eeea460039e8571e06 \
+    && git clone --depth 1 --branch v0.5.3 \
+      https://github.com/status-im/nim-serialization.git /deps/serialization \
+    && git clone --depth 1 --branch v0.4.2 \
+      https://github.com/vacp2p/nim-cbor-serialization.git /deps/cbor_serialization \
+    && git clone https://github.com/status-im/nim-protobuf-serialization.git \
+      /deps/protobuf_serialization \
+    && cd /deps/protobuf_serialization \
+    && git checkout 24ddb65800b351268412840b19a33c6b61bb3046 \
+    && git clone --depth 1 --branch 1.3.0 \
+      https://github.com/zevv/npeg.git /deps/npeg
 
 WORKDIR /workspace/joubako
 COPY . .
 
 ARG JOUBAKO_MEMORY_MANAGER=arc
 
-RUN nimble develop -y -a:/deps/flowbrigade \
-    && nimble develop -y -a:/deps/nifkit \
-    && nimble develop -y -a:/deps/results \
-    && nimble develop -y -a:/deps/unittest2 \
-    && nimble develop -y -a:/deps/stew \
-    && nimble develop -y -a:/deps/zlib \
-    && nimble develop -y -a:/deps/libcurl \
-    && nimble develop -y -a:/deps/faststreams \
-    && nimble --legacy --offline setup \
-    && nim c -d:release --mm:${JOUBAKO_MEMORY_MANAGER} --path:src \
+RUN JOUBAKO_DEPENDENCY_ROOT=/deps nim r \
+      --out:/tmp/joubako-write-ci-paths .github/write_ci_paths.nim \
+    && nim c -d:release --mm:${JOUBAKO_MEMORY_MANAGER} \
       --out:/usr/local/bin/joubako-e2e tests/e2e/client.nim
 
 CMD ["/usr/local/bin/joubako-e2e"]

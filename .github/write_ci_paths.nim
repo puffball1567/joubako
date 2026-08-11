@@ -1,26 +1,28 @@
 import std/[os, strutils]
 
 const dependencyPaths = [
-  "src",
-  "_deps/flowbrigade/src",
-  "_deps/nifkit/src",
-  "_deps/results",
-  "_deps/unittest2",
-  "_deps/stew",
-  "_deps/zlib",
-  "_deps/libcurl",
-  "_deps/faststreams",
-  "_deps/serialization",
-  "_deps/cbor_serialization",
-  "_deps/protobuf_serialization",
-  "_deps/npeg/src",
+  ("flowbrigade", "src"),
+  ("nifkit", "src"),
+  ("results", ""),
+  ("unittest2", ""),
+  ("stew", ""),
+  ("zlib", ""),
+  ("libcurl", ""),
+  ("faststreams", ""),
+  ("serialization", ""),
+  ("cbor_serialization", ""),
+  ("protobuf_serialization", ""),
+  ("npeg", "src"),
 ]
 
 let root = getCurrentDir()
-var config = "--noNimblePath\n"
+let dependencyRoot = getEnv("JOUBAKO_DEPENDENCY_ROOT", root / "_deps")
+var config = "--noNimblePath\n--path:\"" &
+  (root / "src").replace('\\', '/') & "\"\n"
 
-for relativePath in dependencyPaths:
-  let absolutePath = (root / relativePath).replace('\\', '/')
+for (packageName, sourcePath) in dependencyPaths:
+  let absolutePath = (dependencyRoot / packageName / sourcePath)
+    .replace('\\', '/')
   if not dirExists(absolutePath):
     quit "missing CI dependency path: " & absolutePath
   config.add "--path:\"" & absolutePath & "\"\n"
