@@ -1,4 +1,4 @@
-import std/[asyncdispatch, asyncnet, base64, net, strutils, unittest]
+import std/[asyncdispatch, asyncnet, base64, json, net, strutils, unittest]
 {.push warning[Deprecated]: off.}
 import std/sha1
 {.pop.}
@@ -227,6 +227,22 @@ proc exercise(
   return await serving
 
 suite "WebSocket transport":
+  test "carries a JSON-RPC call over a WebSocket exchange":
+    let action = proc(url: string): Future[void] {.async.} =
+      let client = newClient(newWebSocketTransport())
+      let response = await client.callJsonRpc(
+        url, "sum", %*[2, 3], int, jsonRpcId("ws-1")
+      )
+      check response.result == 5
+    let sent = waitFor exercise(
+      """{"jsonrpc":"2.0","result":5,"id":"ws-1"}""", action
+    )
+    let request = sent.parseJson
+    check request["jsonrpc"].getStr == "2.0"
+    check request["method"].getStr == "sum"
+    check request["params"][1].getInt == 3
+    check request["id"].getStr == "ws-1"
+
   test "performs an upgrade and a request-response message exchange":
     let action = proc(url: string): Future[void] {.async.} =
       let client = newClient(newWebSocketTransport())
@@ -433,6 +449,24 @@ suite "WebSocket transport":
     headers.set("x-test", "safe\r\nX-Bad: yes")
     try:
       discard waitFor connectWebSocket("ws://example.test/", headers)
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
+
+  test "direct connection requires the explicit subprotocol argument":
+    var headers = initHeaders()
+    headers.set("sec-websocket-protocol", "graphql-transport-ws")
+    try:
+      discard waitFor connectWebSocket("ws://example.test/", headers)
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeInvalidRequest
+
+  test "direct connection rejects malformed subprotocol tokens":
+    try:
+      discard waitFor connectWebSocket(
+        "ws://example.test/", subprotocol = "one, two"
+      )
       fail()
     except JoubakoError as error:
       check error.kind == jeInvalidRequest

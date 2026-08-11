@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+message GeneratedMessage {
+  uint32 id = 1;
+  string label = 2;
+  repeated sint32 values = 3;
+  bytes payload = 4;
+}

@@ -67,6 +67,10 @@ def stop_server(process: subprocess.Popen) -> None:
 
 
 def main() -> None:
+    memory_manager = os.environ.get("JOUBAKO_MEMORY_MANAGER", "arc")
+    if memory_manager not in {"arc", "orc"}:
+        raise ValueError(f"unsupported memory manager: {memory_manager}")
+
     backend_port = unused_port()
     redirect_port = unused_port()
     while redirect_port == backend_port:
@@ -80,7 +84,7 @@ def main() -> None:
                 "nim",
                 "c",
                 "-d:release",
-                "--mm:arc",
+                f"--mm:{memory_manager}",
                 "--path:src",
                 f"--nimcache:{work_path / 'nimcache'}",
                 f"--out:{client}",

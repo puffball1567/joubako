@@ -45,6 +45,9 @@ type
 func defaultTlsOptions*(): TlsOptions =
   TlsOptions(verifyMode: tvmPeer)
 
+method usesImplicitCredentials*(transport: HttpTransport): bool =
+  transport != nil and transport.cookieJar != nil
+
 proc `=copy`(destination: var PooledConnection; source: PooledConnection) {.
   error: "PooledConnection owns a TLS context and cannot be copied".}
 
@@ -338,9 +341,21 @@ proc multipartWireSizeUpperBound(request: Request): int64 =
             raise error.asJoubakoError(jeStream, request.url)
         else:
           int64(part.body.len)
+      if part.maxBytes > 0 and contentSize > part.maxBytes:
+        raise newJoubakoError(
+          jeBodyTooLarge,
+          "multipart part exceeded its configured limit",
+          request.url
+        )
       result.addMultipartSize(contentSize, request)
       result.addMultipartSize(2, request)
     else:
+      if part.maxBytes > 0 and part.body.len.int64 > part.maxBytes:
+        raise newJoubakoError(
+          jeBodyTooLarge,
+          "multipart part exceeded its configured limit",
+          request.url
+        )
       result.addMultipartSize(int64(4 + part.body.len + 2), request)
   result.addMultipartSize(int64(2 + boundaryLength + 4), request)
 
@@ -493,6 +508,19 @@ proc buildResponse(
     raw.headers.getOrDefault("content-encoding")
   let decoded = request.hasResponseBody(int(raw.code)) and
     contentEncoding.isCompressedEncoding
+  var responseHeaders = initHeaders()
+  for name, value in raw.headers.pairs:
+    if not decoded or
+        name.toLowerAscii notin ["content-encoding", "content-length"]:
+      responseHeaders.add(name, value)
+
+  if not request.options.onResponseHeaders.isNil:
+    try:
+      request.options.onResponseHeaders(int(raw.code), responseHeaders)
+    except CatchableError as error:
+      client.close()
+      raise error.asJoubakoError(jeStream, request.url)
+
   if request.options.maxResponseBytes >= 0 and
       not decoded:
     let declaredLength = raw.headers.getOrDefault("content-length")
@@ -510,12 +538,6 @@ proc buildResponse(
 
   let body = await readBodyBounded(client, raw, request, deadline)
 
-  var responseHeaders = initHeaders()
-  for name, value in raw.headers.pairs:
-    if not decoded or
-        name.toLowerAscii notin ["content-encoding", "content-length"]:
-      responseHeaders.add(name, value)
-
   let statusText =
     if raw.status.len > 3:
       raw.status[3 .. ^1].strip
@@ -525,6 +547,7 @@ proc buildResponse(
   return types.Response(
     status: int(raw.code),
     statusText: statusText,
+    httpVersion: "HTTP/1.1",
     headers: responseHeaders,
     body: body,
     request: request
@@ -687,6 +710,12 @@ method send*(
     transport: HttpTransport;
     request: Request
 ): Future[types.Response] {.async.} =
+  if request.uploadSource != nil:
+    raise newJoubakoError(
+      jeInvalidRequest,
+      "streaming uploads require the HTTP/2 transport",
+      request.url
+    )
   if request.options.cancellation != nil and
       request.options.cancellation.cancelled:
     raise newJoubakoError(

@@ -202,14 +202,15 @@ specific language governing permissions and limitations under the License.
 
 ## NIFKit
 
-- Version: 0.2.0 or later compatible release
+- Version: 0.4.0 or later compatible release
 - Source: https://github.com/puffball1567/nifkit
 - Copyright: Copyright (c) 2026 nifkit contributors
 - License: MIT License
 
-NIFKit provides Joubako's bounded NIF 2027 text to BIF v5 conversion and BIF
-validation. The full MIT License terms are reproduced in the MIT License
-section below.
+NIFKit provides NIF 2027 text/BIF v5 conversion, validation, structured codec
+limits, and the typed Nim data profile. Joubako supplies the finite
+network-boundary policy passed to those mechanisms. The full MIT License terms
+are reproduced in the MIT License section below.
 
 ## nim-zlib
 
@@ -252,16 +253,121 @@ Jean-loup Gailly, jloup@gzip.org
 
 Mark Adler, madler@alumni.caltech.edu
 
+## libcurl Nim bindings
+
+- Version: 1.0.0 or later compatible release
+- Source: https://github.com/Araq/libcurl
+- Copyright: Copyright (c) 2015 Andreas Rumpf
+- License: MIT License
+
+Joubako uses these bindings to access the dynamically linked libcurl runtime
+for its optional HTTP/2 transport. The common MIT License terms are reproduced
+in the shared MIT License section later in this file.
+
+## libcurl runtime
+
+- Version: supplied by the target system; HTTP/2 support is required
+- Source: https://curl.se/libcurl/
+- Copyright: Copyright (c) 1996 - present, Daniel Stenberg, and many contributors
+- License: curl License
+
+### curl License
+
+All rights reserved.
+
+Permission to use, copy, modify, and distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright
+notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF THIRD PARTY RIGHTS. IN
+NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall not
+be used in advertising or otherwise to promote the sale, use or other dealings
+in this Software without prior written authorization of the copyright holder.
+
+## GraphQL parser dependency
+
+### nim-graphql
+
+- Version: 0.2.30
+- Source: https://github.com/status-im/nim-graphql
+- Copyright: Copyright (c) 2021-2026 Status Research & Development GmbH
+- License: Apache License 2.0 or MIT License, at the user's option
+
+Joubako pins nim-graphql as a Git submodule and imports only its
+executable-document lexer and parser. It does not use nim-graphql's HTTP client
+or server runtime. Joubako elects the Apache License 2.0 terms reproduced
+earlier in this file.
+
+## CBOR serialization dependency
+
+### nim-cbor-serialization
+
+- Version: 0.4.2 or later compatible release
+- Source: https://github.com/vacp2p/nim-cbor-serialization
+- Copyright: Copyright (c) 2025 Status Research & Development GmbH
+- License: Apache License 2.0 or MIT License, at the user's option
+
+Joubako uses nim-cbor-serialization for RFC 8949 encoding and bounded parsing
+and elects the Apache License 2.0 terms reproduced earlier in this file.
+
+## Protocol Buffers serialization dependency
+
+### nim-protobuf-serialization
+
+- Version: 0.6.1 or later compatible release
+- Source: https://github.com/status-im/nim-protobuf-serialization
+- Copyright: Copyright (c) 2020-2026 Status Research & Development GmbH
+- License: Apache License 2.0 or MIT License, at the user's option
+
+Joubako uses nim-protobuf-serialization for schema-checked proto2, proto3, and
+Edition binary encoding, decoding, and compile-time `.proto` type generation.
+Joubako elects the Apache License 2.0 terms reproduced earlier in this file.
+
 ## Nim package-resolution dependencies
 
-The following packages are transitive dependencies declared by nim-zlib. The
-Joubako compression implementation imports none of their modules directly,
-but they are recorded here because Nimble resolves them as part of the package
-graph.
+The following packages are direct or transitive dependencies resolved by
+Nimble. They are recorded here even when Joubako imports only a narrow part of
+their API.
+
+### faststreams
+
+- Version: 0.5.1
+- Source: https://github.com/status-im/nim-faststreams
+- Copyright: Copyright (c) Status Research & Development GmbH and contributors
+- License: Apache License 2.0
+
+faststreams supplies the bounded in-memory input abstraction used by the
+nim-graphql parser. The Apache License 2.0 terms are reproduced earlier in this
+file.
+
+### serialization
+
+- Version: 0.5.3 or later compatible release
+- Source: https://github.com/status-im/nim-serialization
+- Copyright: Copyright (c) Status Research & Development GmbH and contributors
+- License: Apache License 2.0
+
+serialization supplies the extensible typed reader/writer framework used by
+nim-cbor-serialization. The Apache License 2.0 terms are reproduced earlier in
+this file.
+
+### npeg
+
+- Version: 1.3.0 or later compatible release
+- Source: https://github.com/zevv/npeg
+- Copyright: Copyright (c) Ico Doornekamp
+- License: MIT License
 
 ### Stew
 
-- Version: 0.4.2
+- Version: 0.5.1
 - Source: https://github.com/status-im/nim-stew
 - Copyright: Status Research & Development GmbH and contributors
 - License: MIT License or Apache License 2.0

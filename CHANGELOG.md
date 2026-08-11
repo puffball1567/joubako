@@ -7,6 +7,44 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- First-class ORC support across the complete test suite, TLS/mTLS/SOCKS5h
+  integration, hardening probes, real-network E2E scenarios, and Valgrind leak
+  checks while retaining ARC as the default memory manager.
+- Incremental file-backed multipart uploads over HTTP/2, including bounded
+  wire-size validation, progress, cancellation, transmitted filename privacy,
+  and correct replay or body removal across redirects.
+- Typed long-lived GraphQL operations over `graphql-transport-ws`, including
+  verified subprotocol negotiation, connection parameters, extensions,
+  ping/pong, bounded messages, cancellation, typed streamed results, terminal
+  GraphQL errors, and explicit completion.
+- Validated resumable file downloads using Range, Content-Range, identity
+  encoding, and optional If-Range validators, with offset-aware progress.
+- Cross-platform AddressSanitizer CI for ARC and ORC on Linux, macOS,
+  and Windows, with Windows explicitly using Clang ASan and LeakSanitizer
+  enabled only on Linux.
+- UndefinedBehaviorSanitizer and multi-threaded ThreadSanitizer probes on Linux
+  and macOS, plus Linux standalone LeakSanitizer, all covering ARC and ORC;
+  Linux also retains integrated ASan leak detection and Valgrind, while macOS
+  and Windows do not claim leak detection.
+- NIFKit v0.4.0 typed Nim-value HTTP helpers over BIF v5 and typed data profile
+  v2, including bounded `NifBytes`, strict compatibility defaults, logical
+  codec error paths, and explicit finite network limits for bytes, depth,
+  tokens, pools, strings, indexes, containers, fields, and tracked references.
+- Named NIF policies with method, exact-path, and longest-prefix routing so
+  uploads and ordinary API calls can use different transport and codec
+  budgets without changing NIFKit's policy-free defaults.
+- Typed `postNifMultipart` uploads with zero-configuration recommended limits
+  for BIF metadata, streamed files, and complete multipart wire size; HTTP/2
+  additionally accounts file reads and total upload progress at runtime and
+  fails closed when that guarantee is required but unavailable.
+
+### Fixed
+
+- File streaming helpers now disable internal transport retry so a failure
+  after bytes reach disk cannot duplicate the same response bytes.
+
 ## [0.1.1] - 2026-08-03
 
 ### Added

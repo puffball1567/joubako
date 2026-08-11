@@ -6,6 +6,19 @@ type
   DownloadChunkProc* = proc(chunk: string) {.closure.}
   AsyncDownloadChunkProc* =
     proc(chunk: string): Future[void] {.closure.}
+  ResponseHeadersProc* =
+    proc(status: int; headers: Headers) {.closure.}
+  UploadWakeProc* = proc() {.closure, gcsafe.}
+  UploadReadProc* =
+    proc(buffer: pointer; capacity: int): int {.closure, gcsafe.}
+  UploadSetWakeProc* = proc(wake: UploadWakeProc) {.closure, gcsafe.}
+
+  UploadSource* = ref object
+    ## Pull interface consumed by streaming-capable transports. `read` returns
+    ## a positive byte count, `UploadReadEof`, `UploadReadPause`, or
+    ## `UploadReadAbort`. `setWake` lets a producer resume a paused transport.
+    read*: UploadReadProc
+    setWake*: UploadSetWakeProc
 
   IdempotencyMode* = enum
     imDefault,
@@ -32,6 +45,10 @@ type
     contentType*: string
     body*: string
     filePath*: string
+    ## Optional per-part payload limit. Positive values are enforced before
+    ## dispatch; transports advertising runtime multipart accounting also
+    ## enforce the bytes read while the request is being sent.
+    maxBytes*: int64
 
   Headers* = object
     values: OrderedTable[string, seq[string]]
@@ -66,6 +83,10 @@ type
     ## Awaited before reading the next chunk, providing asynchronous
     ## backpressure for file and pipeline consumers.
     onDownloadChunkAsync*: AsyncDownloadChunkProc
+    ## Runs after response headers arrive and before the first body chunk.
+    ## Streaming protocols can validate status and content type without
+    ## buffering or prematurely delivering a response body.
+    onResponseHeaders*: ResponseHeadersProc
     ## Delivers chunks without retaining them in `Response.body`.
     streamResponse*: bool
 
@@ -75,14 +96,26 @@ type
     headers*: Headers
     body*: string
     multipartParts*: seq[MultipartPart]
+    uploadSource*: UploadSource
     options*: RequestOptions
 
   Response* = object
     status*: int
     statusText*: string
+    ## Negotiated protocol reported by the transport, for example
+    ## `HTTP/1.1` or `HTTP/2`. Empty when a custom transport does not report it.
+    httpVersion*: string
     headers*: Headers
+    ## Final response metadata delivered after the body. HTTP/2 transports
+    ## keep trailers separate from initial headers so streaming protocols such
+    ## as gRPC can validate completion status without header ambiguity.
+    trailers*: Headers
     body*: string
     request*: Request
+    ## Number of transport attempts used by the logical request.
+    attempts*: int
+    fromCache*: bool
+    cacheRevalidated*: bool
 
   ErrorResponse* = object
     ## Bounded response data retained for an HTTP status error. This omits the
@@ -90,6 +123,7 @@ type
     status*: int
     statusText*: string
     headers*: Headers
+    trailers*: Headers
     body*: string
 
   ErrorKind* = enum
@@ -104,7 +138,8 @@ type
     jeStream,
     jeCircuitOpen,
     jeRateLimited,
-    jeBulkheadRejected
+    jeBulkheadRejected,
+    jeRpcStatus
 
   JoubakoError* = object of CatchableError
     kind*: ErrorKind
@@ -114,6 +149,13 @@ type
     ## `codecOffset` is -1 when the codec did not identify a byte position.
     codecCode*: string
     codecOffset*: int
+    ## Logical value path supplied by structured codecs, for example
+    ## `$.items[3].price`. Empty when the codec does not expose one.
+    codecPath*: string
+    ## gRPC status details. `grpcStatus` is -1 for non-gRPC errors.
+    grpcStatus*: int
+    grpcMessage*: string
+    grpcDetails*: string
     ## Parsed Retry-After delay in milliseconds, or -1 when absent/invalid.
     retryAfterMs*: int64
     ## True when `response` contains an HTTP response received from the peer.
@@ -121,6 +163,11 @@ type
     response*: ErrorResponse
     ## Number of transport attempts completed for this logical request.
     attempts*: int
+
+const
+  UploadReadEof* = 0
+  UploadReadPause* = -1
+  UploadReadAbort* = -2
 
 func normalizeHeader(name: string): string =
   name.strip.toLowerAscii
@@ -151,6 +198,9 @@ proc add*(headers: var Headers; name, value: string) =
 proc set*(headers: var Headers; name, value: string) =
   headers.values[normalizeHeader(name)] = @[value]
 
+proc del*(headers: var Headers; name: string) =
+  headers.values.del(normalizeHeader(name))
+
 func contains*(headers: Headers; name: string): bool =
   normalizeHeader(name) in headers.values
 
@@ -176,6 +226,8 @@ proc toErrorResponse*(response: Response): ErrorResponse =
   result.statusText = response.statusText
   result.headers = initHeaders()
   result.headers.merge(response.headers)
+  result.trailers = initHeaders()
+  result.trailers.merge(response.trailers)
   result.body = response.body
 
 proc overlay*(target: var Headers; source: Headers) =
@@ -237,6 +289,7 @@ proc newJoubakoError*(
   result.status = status
   result.retryAfterMs = retryAfterMs
   result.codecOffset = -1
+  result.grpcStatus = -1
 
 proc attachResponse*(error: ref JoubakoError; response: Response) =
   ## Retains bounded peer response data without the originating Request.

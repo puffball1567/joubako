@@ -35,6 +35,13 @@ proc missingHandler(request: Request): Future[Response] {.async.} =
     raise newException(IOError, "offline")
   if request.url == "stream":
     return Response(status: 200, body: "stream payload", request: request)
+  if request.url == "resume":
+    doAssert request.headers.get("range") == "bytes=4-"
+    var headers = initHeaders()
+    headers.set("content-range", "bytes 4-10/11")
+    return Response(
+      status: 206, headers: headers, body: "ialdata", request: request
+    )
   if request.url == "codec":
     return Response(status: 200, body: request.body, request: request)
   var headers = initHeaders()
@@ -141,6 +148,13 @@ proc main(): Future[void] {.async.} =
   doAssert downloaded.isOk
   doAssert downloaded.value.body.len == 0
   doAssert readFile(outputPath) == "stream payload"
+  for _ in 0 ..< 100:
+    writeFile(outputPath, "part")
+    let resumed = await client.resumeDownloadToFile(
+      "resume", outputPath, "\"probe\""
+    )
+    doAssert resumed.isOk
+    doAssert readFile(outputPath) == "partialdata"
 
 let probe = main()
 waitFor probe

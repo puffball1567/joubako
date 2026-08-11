@@ -1,7 +1,7 @@
 import std/[asyncdispatch, strutils, times, uri]
 import flowbrigade/[backoff, bulkhead, circuit_breaker, retry, timeout]
 import flowbrigade/ratelimit/token_bucket
-import ./[http_retry, query, result, transport, types]
+import ./[http_retry, opentelemetry, query, result, transport, types]
 
 type
   StatusValidator* = proc(status: int): bool {.closure.}
@@ -30,6 +30,19 @@ type
     circuitBreaker: ref CircuitBreaker
     bulkhead: ref Bulkhead
     rateLimiter: ref TokenBucket
+    telemetry: OpenTelemetryConfig
+
+proc useOpenTelemetry*(
+    client: Client;
+    observer: OpenTelemetryObserverProc;
+    options = defaultOpenTelemetryOptions()
+) =
+  if client != nil:
+    client.telemetry = newOpenTelemetryConfig(observer, options)
+
+proc clearOpenTelemetry*(client: Client) =
+  if client != nil:
+    client.telemetry = nil
 
 proc useCircuitBreaker*(
     client: Client;
@@ -190,7 +203,8 @@ proc requestResult(
     body = "";
     headers = initHeaders();
     options: RequestOptions = RequestOptions();
-    multipartParts: seq[MultipartPart] = @[]
+    multipartParts: seq[MultipartPart] = @[];
+    uploadSource: UploadSource = nil
 ): Future[JResult[Response]] {.async.} =
   if client == nil or client.transport == nil:
     return err[Response](newJoubakoError(
@@ -226,6 +240,8 @@ proc requestResult(
     effectiveOptions.onDownloadChunk = options.onDownloadChunk
   if not options.onDownloadChunkAsync.isNil:
     effectiveOptions.onDownloadChunkAsync = options.onDownloadChunkAsync
+  if not options.onResponseHeaders.isNil:
+    effectiveOptions.onResponseHeaders = options.onResponseHeaders
   if options.streamResponse:
     effectiveOptions.streamResponse = true
 
@@ -241,6 +257,7 @@ proc requestResult(
     headers: mergedHeaders,
     body: body,
     multipartParts: multipartParts,
+    uploadSource: uploadSource,
     options: effectiveOptions
   )
 
@@ -281,6 +298,30 @@ proc requestResult(
         request.url
       ))
 
+  if request.uploadSource != nil:
+    if request.body.len > 0 or request.multipartParts.len > 0:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads cannot also contain a buffered or multipart body",
+        request.url
+      ))
+    if request.uploadSource.read.isNil or request.uploadSource.setWake.isNil:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest, "streaming upload source is incomplete", request.url
+      ))
+    if request.headers.contains("content-length"):
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads determine their length from end-of-stream",
+        request.url
+      ))
+    if request.options.retry.maxAttempts >= 2:
+      return err[Response](newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads cannot be retried because the body is not replayable",
+        request.url
+      ))
+
   if request.multipartParts.len > 0:
     if request.body.len > 0:
       return err[Response](newJoubakoError(
@@ -296,15 +337,15 @@ proc requestResult(
       ))
     for part in request.multipartParts:
       if part.name.len == 0 or
-          part.name.contains({'\r', '\n', '"'}):
+          part.name.contains({'\0', '\r', '\n', '"'}):
         return err[Response](newJoubakoError(
           jeInvalidRequest, "invalid multipart field name", request.url
         ))
-      if part.filename.contains({'\r', '\n', '"'}):
+      if part.filename.contains({'\0', '\r', '\n', '"'}):
         return err[Response](newJoubakoError(
           jeInvalidRequest, "invalid multipart filename", request.url
         ))
-      if part.contentType.contains({'\r', '\n'}):
+      if part.contentType.contains({'\0', '\r', '\n'}):
         return err[Response](newJoubakoError(
           jeInvalidRequest, "invalid multipart content type", request.url
         ))
@@ -408,6 +449,9 @@ proc requestResult(
     var response = transportResult.value
 
     response.request = request
+    # A completed response must not retain the producer closures or queued
+    # upload chunks. The ordinary request metadata remains inspectable.
+    response.request.uploadSource = nil
 
     if request.options.cancellation != nil and
         request.options.cancellation.cancelled:
@@ -519,6 +563,7 @@ proc requestResult(
     attemptResult.error.attempts = completedAttempts
     return err[Response](attemptResult.error)
   var response = attemptResult.value
+  response.attempts = completedAttempts
 
   for entry in client.responseInterceptors:
     if request.options.cancellation != nil and
@@ -543,6 +588,8 @@ proc requestResult(
       return err[Response](interceptorResult.error)
     response = interceptorResult.value
     response.request = request
+    response.request.uploadSource = nil
+    response.attempts = completedAttempts
 
   if request.options.maxResponseBytes >= 0 and
       response.body.len > request.options.maxResponseBytes:
@@ -556,6 +603,66 @@ proc requestResult(
     return err[Response](limitError)
   return ok(response)
 
+proc observedRequestResult(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    body = "";
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions();
+    multipartParts: seq[MultipartPart] = @[];
+    uploadSource: UploadSource = nil
+): Future[JResult[Response]] {.async.} =
+  var tracedHeaders = initHeaders()
+  tracedHeaders.merge(headers)
+  var propagationHeaders = initHeaders()
+  if client != nil:
+    propagationHeaders.merge(client.defaultHeaders)
+  propagationHeaders.overlay(headers)
+  let resolvedUrl =
+    if client == nil: path
+    else: client.resolveUrl(path)
+  let telemetry = if client == nil: nil else: client.telemetry
+  let span = startHttpClientSpan(
+    telemetry,
+    httpMethod,
+    resolvedUrl,
+    propagationHeaders,
+    tracedHeaders
+  )
+  let outcome = await settleResult(
+    fallible(client.requestResult(
+      httpMethod,
+      path,
+      body,
+      tracedHeaders,
+      options,
+      multipartParts,
+      uploadSource
+    )),
+    jeTransport,
+    path
+  )
+  if span != nil:
+    if outcome.isOk:
+      finishHttpClientSpan(
+        telemetry,
+        span,
+        outcome.value.request.url,
+        outcome.value.status,
+        outcome.value.attempts
+      )
+    else:
+      finishHttpClientSpan(
+        telemetry,
+        span,
+        outcome.error.url,
+        outcome.error.status,
+        outcome.error.attempts,
+        outcome.error
+      )
+  return outcome
+
 proc request*(
     client: Client;
     httpMethod: RequestMethod;
@@ -565,10 +672,11 @@ proc request*(
     options: RequestOptions = RequestOptions()
 ): Future[JResult[Response]] =
   settleResult(
-    fallible(client.requestResult(
+    fallible(client.observedRequestResult(
       httpMethod, path, body, headers, options
     )),
-    jeTransport, path
+    jeTransport,
+    path
   )
 
 proc requestMultipart*(
@@ -582,12 +690,34 @@ proc requestMultipart*(
   ## Dispatches multipart metadata without materializing file-backed parts.
   ## The HTTP transport supplies the boundary and streams each file path.
   settleResult(
-    fallible(client.requestResult(
+    fallible(client.observedRequestResult(
       httpMethod,
       path,
       headers = headers,
       options = options,
       multipartParts = parts
+    )),
+    jeTransport,
+    path
+  )
+
+proc requestUploadSource*(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    source: UploadSource;
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions()
+): Future[JResult[Response]] =
+  ## Low-level entry point used by bounded upload producers. Most callers
+  ## should use `openUpload` from `joubako/uploadstream`.
+  settleResult(
+    fallible(client.observedRequestResult(
+      httpMethod,
+      path,
+      headers = headers,
+      options = options,
+      uploadSource = source
     )),
     jeTransport,
     path

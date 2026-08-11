@@ -51,6 +51,10 @@ func newFaultInjectingTransport*(
     repeatLast: repeatLast
   )
 
+method usesImplicitCredentials*(transport: FaultInjectingTransport): bool =
+  transport != nil and transport.delegate != nil and
+    transport.delegate.usesImplicitCredentials
+
 proc chooseStep(transport: FaultInjectingTransport): FaultStep =
   inc transport.callCount
   if transport.steps.len == 0:

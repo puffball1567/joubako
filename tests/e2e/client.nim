@@ -157,6 +157,12 @@ proc main() {.async.} =
   )
   doAssert nifResponse == "(record title \"NIF\" -5 12u)"
 
+  let typedNifResponse = requireOk(
+    await api.postNif("echo-bif", payload, EchoPayload),
+    "typed NIF/BIF round trip"
+  )
+  doAssert typedNifResponse == payload
+
   let concurrent = requireOk(
     await all(api.get("health"), api.get("headers")),
     "concurrent requests"
