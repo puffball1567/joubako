@@ -776,8 +776,9 @@ pending Future. One `GraphqlSubscription` owns one WebSocket connection and
 one operation, making completion and resource ownership explicit; callers can
 open independent subscriptions concurrently with `allFutures` when needed.
 
-NIFKit v0.2 integration accepts NIF text at the API boundary, transmits BIF v5
-binary data, and decodes successful responses to canonical NIF text:
+NIFKit v0.3.1 integration supports both raw NIF text and typed Nim values over
+BIF v5. Raw calls accept NIF text and decode successful responses to canonical
+NIF text:
 
 ```nim
 let created = await api.postNif(
@@ -790,25 +791,103 @@ else:
   echo created.value
 ```
 
+Typed overloads encode and decode NIFKit data-profile values directly as BIF,
+without allocating intermediate NIF text:
+
+```nim
+type
+  CreateRecord = object
+    title: string
+    count: int
+
+  RecordReply = object
+    id: int
+    record: CreateRecord
+
+let created = await api.postNif(
+  "/records",
+  CreateRecord(title: "NIF", count: 12),
+  RecordReply
+)
+if created.isOk:
+  echo created.value.id
+```
+
 `getNif`, `sendNif`, `postNif`, `putNif`, and `patchNif` use the provisional
 `application/x-nif-bif` media type unless the caller supplies `Content-Type`.
-Both conversion directions use finite NIFKit limits. They can be tightened
-independently:
+NIFKit deliberately leaves omitted limits unbounded because local conversion,
+code generation, and network clients have different workloads. Joubako owns a
+finite peer-facing policy instead:
+
+| Resource | Joubako default |
+| --- | ---: |
+| Input BIF/NIF bytes | 16 MiB |
+| Encoded request BIF | 16 MiB |
+| Canonical decoded NIF output | 64 MiB |
+| Nesting depth | 64 |
+| Tokens | 100,000 |
+| Pool entries / index entries | 100,000 each |
+| Pool bytes | 16 MiB |
+| Single string bytes | 4 MiB |
+| Container items | 10,000 |
+| Object fields | 10,000 |
+| Tracked references | 10,000 |
+
+The low-level codec limits remain independently configurable from the HTTP
+wire limits. For applications with several trust and workload boundaries,
+named policies bind both layers together and select them by method, exact
+path, or path prefix:
+
+```nim
+var policies = initNifPolicySet()
+policies.definePolicy("default", newNifPolicy(
+  maxRequestBytes = 1 * 1024 * 1024,
+  maxResponseBytes = 1 * 1024 * 1024,
+  maxNestingDepth = 64,
+  maxTokens = 100_000,
+  maxPoolBytes = 512 * 1024
+))
+policies.definePolicy("upload", newNifPolicy(
+  maxRequestBytes = 128 * 1024 * 1024,
+  maxResponseBytes = 2 * 1024 * 1024,
+  maxNestingDepth = 32,
+  maxTokens = 200_000,
+  maxPoolBytes = 1 * 1024 * 1024
+))
+policies.addRoute NifPolicyRoute(
+  httpMethods: {rmPost}, path: "/uploads", policy: "upload"
+)
+policies.addRoute NifPolicyRoute(
+  pathPrefix: "/", policy: "default"
+)
+
+let nifApi = api.withNifPolicies(policies)
+let response = await nifApi.postNif("/uploads", uploadMetadata, UploadReply)
+```
+
+An explicit `policyName = "upload"` wins over routing. Otherwise exact paths
+win over prefixes, the longest prefix wins, method conditions are honored,
+and the configured default is the fallback. Query strings do not affect path
+matching, and `/api` does not match `/api-evil`. A nonzero per-request wire
+limit remains the final override. Applications can still tune every NIFKit
+limit directly when a named policy is unnecessary:
 
 ```nim
 var nifOptions = defaultNifCodecOptions()
 nifOptions.encodeLimits.maxInputBytes = 256 * 1024
-nifOptions.decodeLimits.maxNestingDepth = 64
+nifOptions.decodeLimits.maxNestingDepth = 32
+nifOptions.decodeLimits.maxContainerItems = 1_000
 
 let response = await api.getNif("/records/7", codecOptions = nifOptions)
 ```
 
 Malformed data, unsupported BIF versions, and input, output, nesting, token,
-pool, string, and index limits become `jeCodec` with a machine-readable
-`codecCode`. `codecOffset` is `-1` when NIFKit cannot identify a byte position.
-NIFKit v0.2 does not yet implement its proposed typed Nim-value serializer, so
-this API intentionally works with NIF text rather than pretending to provide
-JSON-style object mapping.
+pool, string, index, container, field, and reference limits become `jeCodec`
+with a machine-readable `codecCode`. `codecOffset` is `-1` when NIFKit cannot
+identify a byte position. Typed failures also retain a logical `codecPath`,
+such as `$.items[3].price`. Typed decoding rejects unknown fields and mismatched
+type names by default; `typedOptions` can relax those rules only at an
+explicitly managed compatibility boundary.
 
 ## Interceptors
 

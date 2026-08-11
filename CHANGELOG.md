@@ -28,6 +28,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   and macOS, plus Linux standalone LeakSanitizer, all covering ARC and ORC;
   Linux also retains integrated ASan leak detection and Valgrind, while macOS
   and Windows do not claim leak detection.
+- NIFKit v0.3.1 typed Nim-value HTTP helpers over BIF v5, strict compatibility
+  defaults, logical codec error paths, and explicit finite network limits for
+  bytes, depth, tokens, pools, strings, indexes, containers, fields, and
+  tracked references.
+- Named NIF policies with method, exact-path, and longest-prefix routing so
+  uploads and ordinary API calls can use different transport and codec
+  budgets without changing NIFKit's policy-free defaults.
 
 ### Fixed
 

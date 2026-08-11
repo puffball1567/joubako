@@ -6,6 +6,10 @@ type FuzzProtobuf {.proto3.} = object
   id {.fieldNumber: 1, pint.}: uint64
   payload {.fieldNumber: 2.}: seq[byte]
 
+type FuzzNifValue = object
+  id: int
+  payload: string
+
 proc randomBytes(maxLength: int): string =
   result = newString(rand(maxLength))
   for index in 0 ..< result.len:
@@ -91,6 +95,23 @@ proc fuzzGrpc(payload: string) =
   if compressed.isErr:
     doAssert compressed.error.kind in {jeCodec, jeCompression, jeBodyTooLarge}
 
+proc fuzzNif(payload: string) =
+  var options = defaultNifCodecOptions()
+  options.decodeLimits.maxInputBytes = 512
+  options.decodeLimits.maxOutputBytes = 2_048
+  options.decodeLimits.maxNestingDepth = 16
+  options.decodeLimits.maxTokens = 128
+  options.decodeLimits.maxPoolEntries = 64
+  options.decodeLimits.maxPoolBytes = 512
+  options.decodeLimits.maxStringBytes = 256
+  options.decodeLimits.maxIndexEntries = 32
+  options.decodeLimits.maxContainerItems = 32
+  options.decodeLimits.maxObjectFields = 16
+  options.decodeLimits.maxTrackedReferences = 16
+  let decoded = tryDecodeNifValue(payload, FuzzNifValue, options)
+  if decoded.isErr:
+    doAssert decoded.error.kind == jeCodec
+
 proc main(): Future[void] {.async.} =
   randomize(0x4a4f5542)
   let iterations = getEnv("JOUBAKO_FUZZ_ITERATIONS", "10000").parseInt
@@ -117,6 +138,7 @@ proc main(): Future[void] {.async.} =
     fuzzCbor(payload)
     fuzzProtobuf(payload)
     fuzzGrpc(payload)
+    fuzzNif(payload)
     if index mod 10 == 0:
       await fuzzCompression(payload)
 

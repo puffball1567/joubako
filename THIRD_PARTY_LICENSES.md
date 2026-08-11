@@ -202,14 +202,15 @@ specific language governing permissions and limitations under the License.
 
 ## NIFKit
 
-- Version: 0.2.0 or later compatible release
+- Version: 0.3.1 or later compatible release
 - Source: https://github.com/puffball1567/nifkit
 - Copyright: Copyright (c) 2026 nifkit contributors
 - License: MIT License
 
-NIFKit provides Joubako's bounded NIF 2027 text to BIF v5 conversion and BIF
-validation. The full MIT License terms are reproduced in the MIT License
-section below.
+NIFKit provides NIF 2027 text/BIF v5 conversion, validation, structured codec
+limits, and the typed Nim data profile. Joubako supplies the finite
+network-boundary policy passed to those mechanisms. The full MIT License terms
+are reproduced in the MIT License section below.
 
 ## nim-zlib
 
