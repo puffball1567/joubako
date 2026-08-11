@@ -2,7 +2,7 @@ FROM nimlang/nim:2.2.10
 
 RUN git clone --depth 1 --branch v0.5.0 \
       https://github.com/puffball1567/flowbrigade.git /deps/flowbrigade \
-    && git clone --depth 1 --branch v0.3.1 \
+    && git clone --depth 1 --branch v0.4.0 \
       https://github.com/puffball1567/nifkit.git /deps/nifkit \
     && git clone --depth 1 --branch v0.2.0 --recurse-submodules \
       https://github.com/status-im/nim-zlib.git /deps/zlib \

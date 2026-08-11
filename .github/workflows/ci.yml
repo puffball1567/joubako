@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: puffball1567/nifkit
-          ref: v0.3.1
+          ref: v0.4.0
           path: _deps/nifkit
 
       - name: Checkout nim-zlib
@@ -279,7 +279,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: puffball1567/nifkit
-          ref: v0.3.1
+          ref: v0.4.0
           path: _deps/nifkit
 
       - name: Checkout nim-zlib
@@ -446,7 +446,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: puffball1567/nifkit
-          ref: v0.3.1
+          ref: v0.4.0
           path: _deps/nifkit
 
       - name: Checkout nim-zlib

@@ -776,9 +776,9 @@ pending Future. One `GraphqlSubscription` owns one WebSocket connection and
 one operation, making completion and resource ownership explicit; callers can
 open independent subscriptions concurrently with `allFutures` when needed.
 
-NIFKit v0.3.1 integration supports both raw NIF text and typed Nim values over
-BIF v5. Raw calls accept NIF text and decode successful responses to canonical
-NIF text:
+NIFKit v0.4.0 integration supports raw NIF text and typed Nim values over BIF
+v5, including typed data profile v2 and bounded `NifBytes`. Raw calls accept
+NIF text and decode successful responses to canonical NIF text:
 
 ```nim
 let created = await api.postNif(

@@ -1,6 +1,7 @@
 import std/[asyncdispatch, sequtils, strutils, unittest]
 import nifkit
-import joubako
+import joubako/[client, multipart, nifcodec, result, transport, types]
+import joubako/transports/inprocess
 import ./result_test_helpers
 
 type
@@ -19,6 +20,10 @@ type
   TwoFields = object
     first: int
     second: int
+
+  BinaryMetadata = object
+    title: string
+    digest: NifBytes
 
   RefNode = ref object
     value: int
@@ -137,6 +142,25 @@ suite "NIFKit codec integration":
     check transport.captured.options.maxRequestBytes ==
       DefaultNifMultipartBytes
     check transport.captured.headers.get("accept") == BifMediaType
+
+  test "NIFKit v0.4 binary metadata stays inside the bounded BIF part":
+    let transport = RuntimeMultipartTransport(responseBody: "ok")
+    let metadata = BinaryMetadata(
+      title: "opaque digest",
+      digest: initNifBytes("\0\x80\xFF")
+    )
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      metadata,
+      formFilePath("file", "/managed/archive.bin")
+    )
+    check outcome.isOk
+    check transport.captured.multipartParts.len == 2
+    let metadataPart = transport.captured.multipartParts[0]
+    check metadataPart.maxBytes == DefaultNifMetadataBytes.int64
+    check fromBif(
+      metadataPart.body, BinaryMetadata, defaultNifDecodeLimits()
+    ) == metadata
 
   test "strict NIF multipart rejects transports without runtime accounting":
     let outcome = waitOutcome newClient(

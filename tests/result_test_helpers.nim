@@ -1,5 +1,5 @@
 import std/asyncdispatch
-import joubako
+import joubako/result
 
 proc waitFor*[T](future: Future[JResult[T]]): T =
   ## Compatibility helper for pre-Result synchronous tests. Production async

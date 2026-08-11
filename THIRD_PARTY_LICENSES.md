@@ -202,7 +202,7 @@ specific language governing permissions and limitations under the License.
 
 ## NIFKit
 
-- Version: 0.3.1 or later compatible release
+- Version: 0.4.0 or later compatible release
 - Source: https://github.com/puffball1567/nifkit
 - Copyright: Copyright (c) 2026 nifkit contributors
 - License: MIT License
