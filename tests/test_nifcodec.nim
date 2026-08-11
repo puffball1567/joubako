@@ -24,6 +24,34 @@ type
     value: int
     next: RefNode
 
+  RuntimeMultipartTransport = ref object of Transport
+    captured: Request
+    responseBody: string
+
+  PreflightMultipartTransport = ref object of RuntimeMultipartTransport
+
+method supportsRuntimeMultipartLimits(
+    transport: RuntimeMultipartTransport
+): bool =
+  transport != nil
+
+method supportsRuntimeMultipartLimits(
+    transport: PreflightMultipartTransport
+): bool =
+  discard transport
+  false
+
+method send(
+    transport: RuntimeMultipartTransport;
+    request: Request
+): Future[Response] {.async.} =
+  transport.captured = request
+  return Response(
+    status: 200,
+    body: transport.responseBody,
+    request: request
+  )
+
 proc echoBif(request: Request): Future[Response] {.async.} =
   return Response(status: 200, body: request.body, request: request)
 
@@ -71,6 +99,82 @@ suite "NIFKit codec integration":
     check options.typedOptions.requireTypeNames
     check not options.typedOptions.allowUnknownFields
 
+  test "recommended NIF multipart defaults require no configuration":
+    let limits = defaultNifMultipartLimits()
+    check limits.maxMetadataBytes == 64 * 1024
+    check limits.maxUploadBytes == 128'i64 * 1024 * 1024
+    check limits.maxMultipartBytes == 129 * 1024 * 1024
+    check limits.requireRuntimeAccounting
+
+  test "typed NIF multipart keeps metadata file and total limits separate":
+    let reply = RecordReply(
+      id: 17,
+      record: CreateRecord(title: "photo", count: 1, enabled: true)
+    )
+    let transport = RuntimeMultipartTransport(
+      responseBody: toBif(reply, defaultNifEncodeLimits())
+    )
+    let metadata = CreateRecord(title: "photo", count: 1, enabled: true)
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      metadata,
+      formFilePath("file", "/managed/photo.png", contentType = "image/png"),
+      RecordReply
+    )
+    check outcome.isOk
+    check outcome.value == reply
+    check transport.captured.multipartParts.len == 2
+    let metadataPart = transport.captured.multipartParts[0]
+    let filePart = transport.captured.multipartParts[1]
+    check metadataPart.name == "metadata"
+    check metadataPart.contentType == BifMediaType
+    check metadataPart.maxBytes == DefaultNifMetadataBytes.int64
+    check fromBif(
+      metadataPart.body, CreateRecord, defaultNifDecodeLimits()
+    ) == metadata
+    check filePart.filePath == "/managed/photo.png"
+    check filePart.maxBytes == DefaultNifUploadBytes.int64
+    check transport.captured.options.maxRequestBytes ==
+      DefaultNifMultipartBytes
+    check transport.captured.headers.get("accept") == BifMediaType
+
+  test "strict NIF multipart rejects transports without runtime accounting":
+    let outcome = waitOutcome newClient(
+      newInProcessTransport(echoBif)
+    ).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: "photo", count: 1, enabled: true),
+      formFilePath("file", "/managed/photo.png")
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeInvalidRequest
+    check "cannot enforce multipart limits" in outcome.error.msg
+
+  test "preflight-only multipart use requires an explicit relaxation":
+    let transport = PreflightMultipartTransport(responseBody: "ok")
+    let limits = newNifMultipartLimits(requireRuntimeAccounting = false)
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: "managed", count: 1, enabled: true),
+      formFilePath("file", "/managed/immutable.png"),
+      limits = limits
+    )
+    check outcome.isOk
+    check transport.captured.multipartParts.len == 2
+
+  test "NIF multipart metadata limits fail before dispatch":
+    let transport = RuntimeMultipartTransport(responseBody: "unused")
+    let limits = newNifMultipartLimits(maxMetadataBytes = 32)
+    let outcome = waitOutcome newClient(transport).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: repeat('x', 128), count: 1, enabled: true),
+      formFilePath("file", "/managed/photo.png"),
+      limits = limits
+    )
+    check outcome.isErr
+    check outcome.error.kind == jeCodec
+    check transport.captured.multipartParts.len == 0
+
   test "named policies apply route-specific wire and codec limits":
     var observedRequestLimit = 0
     var observedResponseLimit = 0
@@ -114,6 +218,31 @@ suite "NIFKit codec integration":
     check selected.codecOptions.encodeLimits.maxNestingDepth == 32
     check selected.codecOptions.decodeLimits.maxTokens == 200_000
     check selected.codecOptions.decodeLimits.maxPoolBytes == 1024 * 1024
+
+  test "named upload policies select independent multipart budgets":
+    let transport = RuntimeMultipartTransport(responseBody: "ok")
+    var policies = initNifPolicySet()
+    policies.definePolicy("upload", newNifPolicy(
+      maxRequestBytes = 1024 * 1024,
+      maxMetadataBytes = 48 * 1024,
+      maxUploadBytes = 128'i64 * 1024 * 1024,
+      maxMultipartBytes = 129 * 1024 * 1024
+    ))
+    policies.addRoute NifPolicyRoute(
+      httpMethods: {rmPost}, path: "/uploads", policy: "upload"
+    )
+    let outcome = waitOutcome newClient(transport).withNifPolicies(
+      policies
+    ).postNifMultipart(
+      "/uploads",
+      CreateRecord(title: "photo", count: 1, enabled: true),
+      formFilePath("file", "/managed/photo.png")
+    )
+    check outcome.isOk
+    check transport.captured.multipartParts[0].maxBytes == 48 * 1024
+    check transport.captured.multipartParts[1].maxBytes ==
+      128'i64 * 1024 * 1024
+    check transport.captured.options.maxRequestBytes == 129 * 1024 * 1024
 
   test "policy routes honor methods exact paths and query-free prefixes":
     var policies = initNifPolicySet()
@@ -263,6 +392,15 @@ suite "NIFKit codec integration":
     policies = initNifPolicySet()
     policies.definePolicy("zero", newNifPolicy(maxRequestBytes = 0))
     policies.defaultPolicy = "zero"
+    expect ValueError:
+      discard newClient(newInProcessTransport(echoBif)).withNifPolicies(
+        policies
+      )
+    policies = initNifPolicySet()
+    policies.definePolicy("badMultipart", newNifPolicy(
+      maxMetadataBytes = 0
+    ))
+    policies.defaultPolicy = "badMultipart"
     expect ValueError:
       discard newClient(newInProcessTransport(echoBif)).withNifPolicies(
         policies

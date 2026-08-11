@@ -848,11 +848,14 @@ policies.definePolicy("default", newNifPolicy(
   maxPoolBytes = 512 * 1024
 ))
 policies.definePolicy("upload", newNifPolicy(
-  maxRequestBytes = 128 * 1024 * 1024,
+  maxRequestBytes = 1 * 1024 * 1024,
   maxResponseBytes = 2 * 1024 * 1024,
   maxNestingDepth = 32,
   maxTokens = 200_000,
-  maxPoolBytes = 1 * 1024 * 1024
+  maxPoolBytes = 1 * 1024 * 1024,
+  maxMetadataBytes = 64 * 1024,
+  maxUploadBytes = 128'i64 * 1024 * 1024,
+  maxMultipartBytes = 129 * 1024 * 1024
 ))
 policies.addRoute NifPolicyRoute(
   httpMethods: {rmPost}, path: "/uploads", policy: "upload"
@@ -862,7 +865,12 @@ policies.addRoute NifPolicyRoute(
 )
 
 let nifApi = api.withNifPolicies(policies)
-let response = await nifApi.postNif("/uploads", uploadMetadata, UploadReply)
+let response = await nifApi.postNifMultipart(
+  "/uploads",
+  uploadMetadata,
+  formFilePath("file", imagePath, contentType = "image/png"),
+  UploadReply
+)
 ```
 
 An explicit `policyName = "upload"` wins over routing. Otherwise exact paths
@@ -880,6 +888,40 @@ nifOptions.decodeLimits.maxContainerItems = 1_000
 
 let response = await api.getNif("/records/7", codecOptions = nifOptions)
 ```
+
+The common NIF file-upload path needs no policy configuration. The built-in
+recommendation allows 64 KiB of typed BIF metadata, a 128 MiB file, and a
+129 MiB complete multipart request while retaining the normal finite NIF
+depth, token, pool, and response limits:
+
+```nim
+type UploadMetadata = object
+  title: string
+  visibility: string
+
+let api = newClient(newHttp2Transport(), "https://api.example.com")
+let result = await api.postNifMultipart(
+  "/uploads",
+  metadata = UploadMetadata(title: "photo", visibility: "public"),
+  file = formFilePath("file", imagePath, contentType = "image/png")
+)
+```
+
+The file is never placed inside the BIF allocation. HTTP/2 captures an open
+file's initial size, streams it through a bounded read callback, limits the
+file part independently, and monitors the complete multipart upload through
+libcurl progress. Growth after opening cannot extend the transmitted body;
+premature truncation is a structured stream error. The metadata, file, and
+complete-wire limits are checked before dispatch as well.
+
+`postNifMultipart` requires runtime multipart accounting by default and fails
+before network dispatch on transports that cannot provide it. The standard
+HTTP/1.1 transport currently provides preflight file and complete-wire checks
+but its standard-library sender does not expose each file read. A caller with
+an immutable, application-managed file can explicitly select that weaker
+contract with
+`newNifMultipartLimits(requireRuntimeAccounting = false)`. Ordinary
+`postMultipart` behavior is unchanged.
 
 Malformed data, unsupported BIF versions, and input, output, nesting, token,
 pool, string, index, container, field, and reference limits become `jeCodec`

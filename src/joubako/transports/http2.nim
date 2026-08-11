@@ -4,7 +4,8 @@
 ## ordering. libcurl owns TLS, HTTP/2 framing, HPACK, connection reuse, and
 ## multiplexing (normally through nghttp2).
 
-import std/[asyncdispatch, monotimes, os, sequtils, strutils, tables, times, uri]
+import std/[asyncdispatch, monotimes, os, sequtils, strutils, syncio, tables,
+  times, uri]
 import libcurl
 import ../[chunkconsumer, compression, cookiejar, result, transport, types]
 
@@ -34,6 +35,9 @@ const
   CurlErrorTimeout = 28
   CurlReadAbort = 0x10000000.csize_t
   CurlReadPause = 0x10000001.csize_t
+  CurlSeekOk = 0.cint
+  CurlSeekFail = 1.cint
+  CurlSeekCant = 2.cint
 
 proc rawEasySetopt(handle: PCurl; option: cint): Code {.
   cdecl, varargs, dynlib: CurlLibrary, importc: "curl_easy_setopt".}
@@ -59,10 +63,32 @@ proc rawMimeType(part: pointer; contentType: cstring): Code {.
   cdecl, dynlib: CurlLibrary, importc: "curl_mime_type".}
 proc rawMimeData(part: pointer; data: cstring; size: clonglong): Code {.
   cdecl, dynlib: CurlLibrary, importc: "curl_mime_data".}
-proc rawMimeFileData(part: pointer; filePath: cstring): Code {.
-  cdecl, dynlib: CurlLibrary, importc: "curl_mime_filedata".}
+type
+  CurlMimeReadProc = proc(
+    buffer: pointer; size, itemCount: csize_t; userdata: pointer
+  ): csize_t {.cdecl.}
+  CurlMimeSeekProc = proc(
+    userdata: pointer; offset: clonglong; origin: cint
+  ): cint {.cdecl.}
+  CurlMimeFreeProc = proc(userdata: pointer) {.cdecl.}
+
+proc rawMimeDataCallback(
+    part: pointer;
+    dataSize: clonglong;
+    readCallback: CurlMimeReadProc;
+    seekCallback: CurlMimeSeekProc;
+    freeCallback: CurlMimeFreeProc;
+    userdata: pointer
+): Code {.cdecl, dynlib: CurlLibrary, importc: "curl_mime_data_cb".}
 
 type
+  MultipartFileState = ref object
+    transfer: pointer
+    file: File
+    dataSize: int64
+    readBytes: int64
+    maxBytes: int64
+
   CurlOutcome = object
     response: Response
     error: ref JoubakoError
@@ -99,6 +125,7 @@ type
     lastUploaded: int64
     uploadReadBytes: int64
     uploadPaused: bool
+    multipartFiles: seq[MultipartFileState]
     cleaned: bool
 
   Http2Transport* = ref object of Transport
@@ -167,6 +194,9 @@ proc newHttp2Transport*(
 method usesImplicitCredentials*(transport: Http2Transport): bool =
   transport != nil and transport.cookieJar != nil
 
+method supportsRuntimeMultipartLimits*(transport: Http2Transport): bool =
+  transport != nil
+
 func effectivePort(url: Uri): int =
   if url.port.len > 0:
     try:
@@ -215,6 +245,88 @@ func forbiddenHttp2Header(name: string): bool =
 proc rememberError(state: CurlTransfer; error: ref JoubakoError) =
   if state.error == nil:
     state.error = error
+
+proc multipartFileRead(
+    buffer: pointer;
+    size, itemCount: csize_t;
+    userdata: pointer
+): csize_t {.cdecl.} =
+  let fileState = cast[MultipartFileState](userdata)
+  if fileState == nil or fileState.file == nil:
+    return CurlReadAbort
+  let transfer = cast[CurlTransfer](fileState.transfer)
+  if transfer == nil or transfer.error != nil:
+    return CurlReadAbort
+  if size != 0 and itemCount > high(csize_t) div size:
+    transfer.rememberError(newJoubakoError(
+      jeStream, "HTTP/2 multipart read capacity overflow", transfer.request.url
+    ))
+    return CurlReadAbort
+  let capacity = size * itemCount
+  if capacity > high(int).csize_t:
+    transfer.rememberError(newJoubakoError(
+      jeStream, "HTTP/2 multipart read capacity is too large",
+      transfer.request.url
+    ))
+    return CurlReadAbort
+  let remaining = fileState.dataSize - fileState.readBytes
+  if remaining <= 0:
+    return 0
+  let requested = min(capacity.int64, remaining).int
+  try:
+    let count = fileState.file.readBuffer(buffer, requested)
+    if count <= 0:
+      transfer.rememberError(newJoubakoError(
+        jeStream,
+        "HTTP/2 multipart file ended before its captured size",
+        transfer.request.url
+      ))
+      return CurlReadAbort
+    if fileState.maxBytes > 0 and
+        (fileState.readBytes > fileState.maxBytes or
+         count.int64 > fileState.maxBytes - fileState.readBytes):
+      transfer.rememberError(newJoubakoError(
+        jeBodyTooLarge,
+        "HTTP/2 multipart file exceeded its runtime limit",
+        transfer.request.url
+      ))
+      return CurlReadAbort
+    fileState.readBytes += count.int64
+    transfer.lastActivityAt = getMonoTime()
+    count.csize_t
+  except CatchableError as error:
+    transfer.rememberError(error.asJoubakoError(
+      jeStream, transfer.request.url
+    ))
+    CurlReadAbort
+
+proc multipartFileSeek(
+    userdata: pointer;
+    offset: clonglong;
+    origin: cint
+): cint {.cdecl.} =
+  let fileState = cast[MultipartFileState](userdata)
+  if fileState == nil or fileState.file == nil:
+    return CurlSeekFail
+  let target =
+    case origin
+    of 0: offset.int64
+    of 1: fileState.readBytes + offset.int64
+    of 2: fileState.dataSize + offset.int64
+    else: return CurlSeekCant
+  if target < 0 or target > fileState.dataSize or
+      (fileState.maxBytes > 0 and target > fileState.maxBytes):
+    return CurlSeekCant
+  try:
+    fileState.file.setFilePos(target)
+    fileState.readBytes = target
+    CurlSeekOk
+  except CatchableError:
+    CurlSeekFail
+
+proc multipartFileFree(userdata: pointer) {.cdecl.} =
+  ## CurlTransfer owns and closes the state after the easy handle is removed.
+  discard userdata
 
 proc finalizeHeaders(state: CurlTransfer) =
   if state.headersDelivered:
@@ -357,6 +469,14 @@ proc progressCallback(
   let token = state.request.options.cancellation
   if token != nil and token.cancelled:
     return 1
+  if state.request.options.maxRequestBytes >= 0 and
+      uploaded.int64 > state.request.options.maxRequestBytes.int64:
+    state.rememberError(newJoubakoError(
+      jeBodyTooLarge,
+      "HTTP/2 upload exceeded the configured runtime limit",
+      state.request.url
+    ))
+    return 1
   if uploaded.int64 != state.lastUploaded:
     state.lastUploaded = uploaded.int64
     if state.request.options.onUploadProgress != nil:
@@ -473,6 +593,16 @@ proc cleanupTransfer(state: CurlTransfer) =
   if state.mime != nil:
     rawMimeFree(state.mime)
     state.mime = nil
+  for fileState in state.multipartFiles:
+    if fileState != nil and fileState.file != nil:
+      try:
+        fileState.file.close()
+      except CatchableError:
+        discard
+      fileState.file = nil
+    if fileState != nil:
+      fileState.transfer = nil
+  state.multipartFiles.setLen(0)
   if state.headerList != nil:
     slist_free_all(state.headerList)
     state.headerList = nil
@@ -771,6 +901,12 @@ proc multipartWireSizeUpperBound(request: Request): int64 =
           raise error.asJoubakoError(jeStream, request.url)
       else:
         int64(part.body.len)
+    if part.maxBytes > 0 and contentSize > part.maxBytes:
+      raise newJoubakoError(
+        jeBodyTooLarge,
+        "HTTP/2 multipart part exceeded its configured limit",
+        request.url
+      )
     result.addMultipartSize(contentSize, request)
     result.addMultipartSize(2, request)
   result.addMultipartSize(int64(2 + boundaryLength + 4), request)
@@ -805,8 +941,40 @@ proc configureMultipart(state: CurlTransfer) =
       )
     checkedMime(rawMimeName(part, item.name.cstring), state.request, "name")
     if item.filePath.len > 0:
+      var file: File
+      try:
+        file = open(item.filePath, fmRead)
+      except CatchableError as error:
+        raise error.asJoubakoError(jeStream, state.request.url)
+      var dataSize: int64
+      try:
+        dataSize = file.getFileSize()
+      except CatchableError as error:
+        file.close()
+        raise error.asJoubakoError(jeStream, state.request.url)
+      if item.maxBytes > 0 and dataSize > item.maxBytes:
+        file.close()
+        raise newJoubakoError(
+          jeBodyTooLarge,
+          "HTTP/2 multipart file exceeded its configured limit",
+          state.request.url
+        )
+      let fileState = MultipartFileState(
+        transfer: cast[pointer](state),
+        file: file,
+        dataSize: dataSize,
+        maxBytes: item.maxBytes
+      )
+      state.multipartFiles.add fileState
       checkedMime(
-        rawMimeFileData(part, item.filePath.cstring),
+        rawMimeDataCallback(
+          part,
+          dataSize.clonglong,
+          multipartFileRead,
+          multipartFileSeek,
+          multipartFileFree,
+          cast[pointer](fileState)
+        ),
         state.request,
         "file"
       )

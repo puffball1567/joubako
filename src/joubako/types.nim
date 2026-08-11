@@ -45,6 +45,10 @@ type
     contentType*: string
     body*: string
     filePath*: string
+    ## Optional per-part payload limit. Positive values are enforced before
+    ## dispatch; transports advertising runtime multipart accounting also
+    ## enforce the bytes read while the request is being sent.
+    maxBytes*: int64
 
   Headers* = object
     values: OrderedTable[string, seq[string]]
