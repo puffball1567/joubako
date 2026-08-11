@@ -14,7 +14,7 @@ RUN git clone --depth 1 --branch v0.5.0 \
       https://github.com/status-im/nim-unittest2.git /deps/unittest2 \
     && git clone https://github.com/Araq/libcurl.git /deps/libcurl \
     && cd /deps/libcurl \
-    && git checkout 177d7007155096f9091126f81e7dda0032bffe9d \
+    && git checkout v1.0.0 \
     && git clone https://github.com/status-im/nim-faststreams.git /deps/faststreams \
     && cd /deps/faststreams \
     && git checkout 50889cd16ec8771106cdd0eeea460039e8571e06

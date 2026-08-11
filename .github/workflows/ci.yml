@@ -55,7 +55,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Araq/libcurl
-          ref: 177d7007155096f9091126f81e7dda0032bffe9d
+          ref: v1.0.0
           path: _deps/libcurl
 
       - name: Checkout results
@@ -301,7 +301,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Araq/libcurl
-          ref: 177d7007155096f9091126f81e7dda0032bffe9d
+          ref: v1.0.0
           path: _deps/libcurl
 
       - name: Checkout results
@@ -468,7 +468,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: Araq/libcurl
-          ref: 177d7007155096f9091126f81e7dda0032bffe9d
+          ref: v1.0.0
           path: _deps/libcurl
 
       - name: Checkout results
