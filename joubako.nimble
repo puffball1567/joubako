@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.0"
+version       = "0.2.1"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
@@ -87,6 +87,24 @@ task testSslOrc, "Run TLS, mTLS, and SOCKS5h integration tests with ORC":
 
 task benchmark, "Build and run local core benchmarks":
   exec "nim c -d:release -r --path:src --nimcache:" & temporary("joubako-benchmark-nimcache") & " --out:" & temporary("joubako-core-benchmark") & " benchmarks/core_bench.nim"
+
+proc runHttp1Benchmark(memoryManager: string) =
+  let stem = "joubako-" & memoryManager & "-http1-benchmark"
+  let runner = temporary(stem & "-runner")
+  let benchmark = temporary(stem)
+  exec "nim c --mm:" & memoryManager & " --nimcache:" &
+    temporary(stem & "-runner-nimcache") & " --out:" & runner &
+    " benchmarks/run_http1_benchmark.nim"
+  exec "nim c -d:release --mm:" & memoryManager &
+    " --path:src --nimcache:" & temporary(stem & "-nimcache") &
+    " --out:" & benchmark & " benchmarks/joubako_http1_bench.nim"
+  exec runner & " " & benchmark
+
+task benchmarkHttp1, "Run the reproducible Joubako HTTP/1.1 benchmark with ARC":
+  runHttp1Benchmark("arc")
+
+task benchmarkHttp1Orc, "Run the reproducible Joubako HTTP/1.1 benchmark with ORC":
+  runHttp1Benchmark("orc")
 
 proc runNetworkBenchmark(memoryManager: string) =
   when defined(windows):
