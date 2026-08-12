@@ -1471,6 +1471,8 @@ and substitute gates.
 
 ```sh
 nimble benchmark
+nimble benchmarkHttp1
+nimble benchmarkHttp1Orc
 nimble benchmarkNetwork
 nimble benchmarkNetworkOrc
 ```
@@ -1499,6 +1501,10 @@ Network benchmark results are descriptive measurements of the current host,
 not pass/fail thresholds. The HTTP/2 and gRPC integration suites remain the
 correctness gate. A checked-in [reference ARC/ORC run](docs/network-benchmark.md)
 documents the exact workload and host environment.
+
+A separate [Joubako v0.2.0 versus Chronos v4.4.0 HTTP/1.1 comparison](docs/chronos-http1-benchmark.md)
+publishes the benchmark source, controlled loopback methodology, ARC/ORC
+results, and important limits on what those measurements mean.
 
 ## License
 

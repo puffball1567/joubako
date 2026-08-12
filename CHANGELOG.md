@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-12
+
+### Added
+
+- A reproducible HTTP/1.1 comparison benchmark for Joubako v0.2.0 and Chronos
+  v4.4.0, covering default and connection-reusing configurations under ARC
+  and ORC with sequential and 32-request concurrent workloads.
+- Published methodology, environment, limitations, complete results, and
+  optimization targets derived from three independent benchmark runs.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added

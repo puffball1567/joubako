@@ -144,7 +144,10 @@ jobs:
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/basic.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/core_bench.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/joubako_http1_bench.nim
+          nim check --mm:${{ matrix.memory-manager }} benchmarks/run_http1_benchmark.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/network_bench.nim
+          node --check benchmarks/http1_bench_server.mjs
           nim check --threads:on --mm:${{ matrix.memory-manager }} --path:src tests/tsan_probe.nim
 
       - name: Run ARC tests with Nim 2.2 Nimble
