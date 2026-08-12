@@ -186,7 +186,8 @@ proc serveExchange(
     server: AsyncSocket;
     responseBody: string;
     validAccept = true;
-    waitForClose = false
+    waitForClose = false;
+    requestReceived: Future[void] = nil
 ): Future[string] {.async.} =
   let socket = await server.accept()
   defer:
@@ -203,6 +204,8 @@ proc serveExchange(
   if not validAccept:
     return
   result = await socket.receiveMaskedText()
+  if requestReceived != nil and not requestReceived.finished:
+    requestReceived.complete()
   if waitForClose:
     while (await socket.recv(64)).len > 0:
       discard
@@ -213,7 +216,8 @@ proc exercise(
     responseBody: string;
     action: proc(url: string): Future[void] {.closure.};
     validAccept = true;
-    waitForClose = false
+    waitForClose = false;
+    requestReceived: Future[void] = nil
 ): Future[string] {.async.} =
   let server = newAsyncSocket(buffered = false)
   server.setSockOpt(OptReuseAddr, true)
@@ -222,7 +226,9 @@ proc exercise(
   defer:
     server.close()
   let (_, port) = server.getLocalAddr()
-  let serving = serveExchange(server, responseBody, validAccept, waitForClose)
+  let serving = serveExchange(
+    server, responseBody, validAccept, waitForClose, requestReceived
+  )
   await action("ws://127.0.0.1:" & $int(port) & "/messages?room=one")
   return await serving
 
@@ -274,20 +280,24 @@ suite "WebSocket transport":
     discard waitFor exercise("four", action)
 
   test "active cancellation closes a waiting exchange":
+    let requestReceived =
+      newFuture[void]("test_websocket.cancellationRequestReceived")
     let action = proc(url: string): Future[void] {.async.} =
       let client = newClient(newWebSocketTransport())
       let token = newCancellationToken()
       var options = defaultRequestOptions()
       options.cancellation = token
       let pending = client.post(url, "hello", options = options)
-      await sleepAsync(10)
+      await requestReceived
       token.cancel("superseded")
       try:
         discard await pending
         fail()
       except JoubakoError as error:
         check error.kind == jeCancelled
-    discard waitFor exercise("", action, waitForClose = true)
+    discard waitFor exercise(
+      "", action, waitForClose = true, requestReceived = requestReceived
+    )
 
   test "non-WebSocket URL schemes are invalid":
     let client = newClient(newWebSocketTransport())
