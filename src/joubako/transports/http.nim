@@ -1,5 +1,5 @@
-import std/[asyncdispatch, base64, httpclient, httpcore, os, strutils, times,
-  uri]
+import std/[asyncdispatch, asyncnet, base64, httpclient, httpcore, monotimes,
+  nativesockets, os, strutils, times, uri]
 when defined(ssl):
   import std/[net, openssl, ssl_config]
 import flowbrigade/timeout
@@ -27,8 +27,21 @@ type
     client: AsyncHttpClient
     origin: string
     proxyAuthorization: string
+    noDelaySocket: pointer
     when defined(ssl):
       sslContext: SslContext
+
+  TimeoutWaiter = ref object
+    expiresAt: MonoTime
+    destination: Future[bool]
+    pending: FutureBase
+
+  TimeoutScheduler = ref object
+    waiters: seq[TimeoutWaiter]
+    wake: Future[void]
+    sleepingUntil: MonoTime
+    sleeping: bool
+    running: bool
 
   HttpTransport* = ref object of Transport
     userAgent*: string
@@ -41,6 +54,114 @@ type
     cookieJar*: CookieJar
     tlsOptions*: TlsOptions
     idleConnections: seq[PooledConnection]
+    timeoutScheduler: TimeoutScheduler
+
+proc wakeScheduler(scheduler: TimeoutScheduler) =
+  if scheduler.sleeping and scheduler.wake != nil and
+      not scheduler.wake.finished:
+    scheduler.wake.complete()
+
+proc runTimeoutScheduler(scheduler: TimeoutScheduler): Future[void] {.async.} =
+  try:
+    while scheduler.waiters.len > 0:
+      var earliest = scheduler.waiters[0].expiresAt
+      for index in 1 ..< scheduler.waiters.len:
+        if scheduler.waiters[index].expiresAt < earliest:
+          earliest = scheduler.waiters[index].expiresAt
+
+      scheduler.sleepingUntil = earliest
+      scheduler.sleeping = true
+      let remaining = earliest - getMonoTime()
+      let waitMs = max(
+        0'i64,
+        (remaining.inNanoseconds + 999_999) div 1_000_000
+      )
+      let timer = sleepAsync(waitMs.int)
+      let wake = newFuture[void]("Joubako.HttpTimeoutScheduler.wake")
+      let gate = newFuture[void]("Joubako.HttpTimeoutScheduler.gate")
+      scheduler.wake = wake
+
+      proc openGate() =
+        if not gate.finished:
+          gate.complete()
+
+      timer.addCallback(openGate)
+      wake.addCallback(openGate)
+      await gate
+      # Whichever side lost must not retain the completed gate or this async
+      # scheduler until a stale dispatcher timer eventually expires.
+      timer.clearCallbacks()
+      wake.clearCallbacks()
+      scheduler.sleeping = false
+
+      let now = getMonoTime()
+      var index = scheduler.waiters.high
+      while index >= 0:
+        let waiter = scheduler.waiters[index]
+        if waiter.expiresAt <= now:
+          scheduler.waiters.del(index)
+          waiter.pending.clearCallbacks()
+          if not waiter.destination.finished:
+            waiter.destination.complete(false)
+        dec index
+  finally:
+    scheduler.wake = nil
+    scheduler.sleeping = false
+    scheduler.running = false
+
+proc registerTimeout(
+    scheduler: TimeoutScheduler;
+    timeoutMs: int;
+    destination: Future[bool];
+    pending: FutureBase
+): TimeoutWaiter =
+  result = TimeoutWaiter(
+    expiresAt: getMonoTime() + initDuration(milliseconds = timeoutMs),
+    destination: destination,
+    pending: pending
+  )
+  scheduler.waiters.add result
+  if not scheduler.running:
+    scheduler.running = true
+    asyncCheck scheduler.runTimeoutScheduler()
+  elif scheduler.sleeping and result.expiresAt < scheduler.sleepingUntil:
+    scheduler.wakeScheduler()
+
+proc unregisterTimeout(
+    scheduler: TimeoutScheduler;
+    waiter: TimeoutWaiter
+) =
+  for index in 0 ..< scheduler.waiters.len:
+    if scheduler.waiters[index] == waiter:
+      scheduler.waiters.del(index)
+      # Removing the earliest waiter does not require rescheduling: the old
+      # timer may wake before the next deadline, which is safe, and avoids a
+      # scheduler restart for every successful I/O completion. Wake only to
+      # let an otherwise idle scheduler terminate promptly.
+      if scheduler.waiters.len == 0:
+        scheduler.wakeScheduler()
+      return
+
+proc waitWithTimeout[T](
+    scheduler: TimeoutScheduler;
+    pending: Future[T];
+    timeoutMs: int
+): Future[bool] =
+  ## The caller owns `pending` exclusively while this race is active. Both
+  ## completion paths detach the losing callback before releasing the waiter.
+  result = newFuture[bool]("Joubako.HttpTimeoutScheduler.waitWithTimeout")
+  let destination = result
+  let waiter = scheduler.registerTimeout(timeoutMs, destination, pending)
+
+  pending.addCallback(proc() =
+    scheduler.unregisterTimeout(waiter)
+    if destination.finished:
+      return
+    if pending.failed:
+      destination.fail(pending.error)
+    else:
+      destination.complete(true)
+  )
 
 func defaultTlsOptions*(): TlsOptions =
   TlsOptions(verifyMode: tvmPeer)
@@ -68,6 +189,31 @@ proc close(connection: var PooledConnection) {.raises: [].} =
 
 proc `=destroy`(connection: var PooledConnection) =
   connection.close()
+  `=destroy`(connection.origin)
+  `=destroy`(connection.proxyAuthorization)
+
+func baseHttpHeaders(): HttpHeaders =
+  newHttpHeaders({"accept-encoding": "gzip, deflate"})
+
+proc enableTcpNoDelay(connection: var PooledConnection) =
+  ## AsyncHttpClient sends the header block and request body separately. On a
+  ## reused connection, Nagle's algorithm can otherwise turn a small-body
+  ## request into a delayed-ACK stall. AsyncHttpClient does not expose its
+  ## async socket, so fieldPairs is used to configure the typed socket field.
+  for name, field in fieldPairs(connection.client[]):
+    when name == "socket":
+      if field == nil or field.isClosed:
+        connection.noDelaySocket = nil
+      elif cast[pointer](field) != connection.noDelaySocket:
+        field.setSockOpt(OptNoDelay, true, level = IPPROTO_TCP.cint)
+        connection.noDelaySocket = cast[pointer](field)
+
+func hasHeader(headers: HttpHeaders; name: string): bool =
+  headers != nil and headers.hasKey(name)
+
+proc deleteHeader(headers: HttpHeaders; name: string) =
+  if headers != nil:
+    headers.del(name)
 
 proc validateAllowedHost(request: Request; url: Uri) =
   if url.hostname.len == 0:
@@ -114,7 +260,7 @@ proc newHttpTransport*(
     userAgent = "Joubako/0.1";
     maxRedirects: Natural = 5;
     proxy: Proxy = nil;
-    maxIdleConnections: Natural = 8;
+    maxIdleConnections: Natural = 32;
     cookieJar: CookieJar = nil;
     tlsOptions = defaultTlsOptions();
     proxyOptions = ProxyOptions()
@@ -132,7 +278,8 @@ proc newHttpTransport*(
     proxyOptions: proxyOptions,
     maxIdleConnections: maxIdleConnections,
     cookieJar: cookieJar,
-    tlsOptions: tlsOptions
+    tlsOptions: tlsOptions,
+    timeoutScheduler: TimeoutScheduler()
   )
 
 func originKey(url: Uri): string =
@@ -209,6 +356,11 @@ proc checkoutConnection(
   let selectedProxy =
     if transport.proxy != nil:
       transport.proxy
+    elif not transport.proxyOptions.useEnvironment and
+        transport.proxyOptions.httpProxy.len == 0 and
+        transport.proxyOptions.httpsProxy.len == 0 and
+        transport.proxyOptions.allProxy.len == 0:
+      nil
     else:
       let configured = transport.proxyOptions.proxyUrlFor($url)
       if configured.len == 0: nil else: newProxy(configured)
@@ -217,7 +369,9 @@ proc checkoutConnection(
   for index in 0 ..< transport.idleConnections.len:
     if transport.idleConnections[index].origin == origin:
       result = move(transport.idleConnections[index])
-      transport.idleConnections.delete(index)
+      # Idle connection order has no public meaning. Swap-delete avoids
+      # shifting the remaining pool on every same-origin checkout.
+      transport.idleConnections.del(index)
       return
   var clientProxy = selectedProxy
   var proxyAuthorization = ""
@@ -267,6 +421,10 @@ proc checkoutConnection(
       origin: origin,
       proxyAuthorization: proxyAuthorization
     )
+  # Compression support is connection-invariant. Keeping it in the client's
+  # base headers avoids allocating a one-entry override table on every method
+  # when callers did not provide request headers.
+  result.client.headers = baseHttpHeaders()
 
 proc checkinConnection(
     transport: HttpTransport;
@@ -384,178 +542,9 @@ proc buildMultipart(request: Request): MultipartData =
         useStream = false
       )
 
-proc readBodyBounded(
-    client: AsyncHttpClient;
-    response: AsyncResponse;
-    request: Request;
-    deadline: Deadline
-): Future[string] {.async.} =
-  ## Read one transport chunk at a time and check before appending it. This
-  ## keeps an untrusted response from being fully materialized before the
-  ## configured limit is enforced.
-  let limit = request.options.maxResponseBytes
-  let contentEncoding: string =
-    response.headers.getOrDefault("content-encoding")
-  let decoder = newContentDecoder(
-    if request.hasResponseBody(int(response.code)): contentEncoding else: "",
-    limit,
-    request.url,
-    int(response.code)
-  )
-  defer:
-    decoder.close()
-  var received = 0
-  var total = -1'i64
-  var body: string
-  let declaredLength = response.headers.getOrDefault("content-length")
-  if decoder == nil and declaredLength.len > 0:
-    try:
-      total = declaredLength.parseBiggestInt
-    except ValueError:
-      discard
-
-  proc deliver(chunk: string): Future[void] {.async.} =
-    if limit >= 0 and
-        (received > limit or chunk.len > limit - received):
-      client.close()
-      raise newJoubakoError(
-        jeBodyTooLarge,
-        "response body exceeded the configured limit while streaming",
-        request.url,
-        int(response.code)
-      )
-    received += chunk.len
-    await request.consumeDownloadChunk(chunk)
-    if not request.options.streamResponse:
-      body.add chunk
-    if not request.options.onDownloadProgress.isNil:
-      request.options.onDownloadProgress(int64(received), total)
-
-  while true:
-    let reading = response.bodyStream.read()
-    var waitMs = request.options.readTimeoutMs
-    if deadline.isInitialized:
-      let remainingMs = deadline.remaining.durationMillisecondsCeil
-      if remainingMs <= 0:
-        client.close()
-        raise newJoubakoError(
-          jeTimeout,
-          "request exceeded its total deadline while reading the response",
-          request.url,
-          int(response.code)
-        )
-      if waitMs < 0 or remainingMs < waitMs:
-        waitMs = remainingMs
-
-    let token = request.options.cancellation
-    if token != nil:
-      let cancelled = token.cancellationFuture()
-      if waitMs >= 0:
-        let timer = sleepAsync(waitMs)
-        await ((reading or cancelled) or timer)
-        if not reading.finished:
-          client.close()
-          if token.cancelled:
-            raise newJoubakoError(
-              jeCancelled, token.reason, request.url, int(response.code)
-            )
-          raise newJoubakoError(
-            jeTimeout,
-            "response body read exceeded its deadline",
-            request.url,
-            int(response.code)
-          )
-      else:
-        await (reading or cancelled)
-        if not reading.finished:
-          client.close()
-          raise newJoubakoError(
-            jeCancelled, token.reason, request.url, int(response.code)
-          )
-    elif waitMs >= 0 and not await reading.withTimeout(waitMs):
-      client.close()
-      raise newJoubakoError(
-        jeTimeout,
-        "response body read exceeded its deadline",
-        request.url,
-        int(response.code)
-      )
-    let (hasValue, chunk) = await reading
-    if not hasValue:
-      break
-
-    if decoder == nil:
-      await deliver(chunk)
-    else:
-      let decoded = await settle(
-        fallible(decoder.decode(chunk, deliver)),
-        jeCompression,
-        request.url
-      )
-      if decoded.isErr:
-        raise decoded.error
-
-  decoder.finish()
-  return body
-
-proc buildResponse(
-    client: AsyncHttpClient;
-    raw: AsyncResponse;
-    request: Request;
-    deadline: Deadline
-): Future[types.Response] {.async.} =
-  let contentEncoding: string =
-    raw.headers.getOrDefault("content-encoding")
-  let decoded = request.hasResponseBody(int(raw.code)) and
-    contentEncoding.isCompressedEncoding
-  var responseHeaders = initHeaders()
-  for name, value in raw.headers.pairs:
-    if not decoded or
-        name.toLowerAscii notin ["content-encoding", "content-length"]:
-      responseHeaders.add(name, value)
-
-  if not request.options.onResponseHeaders.isNil:
-    try:
-      request.options.onResponseHeaders(int(raw.code), responseHeaders)
-    except CatchableError as error:
-      client.close()
-      raise error.asJoubakoError(jeStream, request.url)
-
-  if request.options.maxResponseBytes >= 0 and
-      not decoded:
-    let declaredLength = raw.headers.getOrDefault("content-length")
-    if declaredLength.len > 0:
-      try:
-        if declaredLength.parseInt > request.options.maxResponseBytes:
-          raise newJoubakoError(
-            jeBodyTooLarge,
-            "declared response body exceeds the configured limit",
-            request.url,
-            int(raw.code)
-          )
-      except ValueError:
-        discard
-
-  let body = await readBodyBounded(client, raw, request, deadline)
-
-  let statusText =
-    if raw.status.len > 3:
-      raw.status[3 .. ^1].strip
-    else:
-      ""
-
-  return types.Response(
-    status: int(raw.code),
-    statusText: statusText,
-    httpVersion: "HTTP/1.1",
-    headers: responseHeaders,
-    body: body,
-    request: request
-  )
-
 proc performRedirectingRequest(
     transport: HttpTransport;
-    request: Request;
+    request: sink Request;
     initialHeaders: HttpHeaders
 ): Future[types.Response] {.async.} =
   var currentUrl = parseUri(request.url)
@@ -567,38 +556,46 @@ proc performRedirectingRequest(
       transport.checkinConnection(move(connection))
     elif connection.client != nil:
       connection.close()
-  var currentMethod = request.httpMethod
-  var currentBody = request.body
-  var currentMultipartParts = request.multipartParts
+  # Reuse one mutable hop request across redirects. Copying Request separately
+  # into current method/body/parts and again on every hop adds ARC/ORC traffic
+  # to every successful request, including POST and multipart requests.
+  var hopRequest = move(request)
+  var originalRequest: Request
+  var followedRedirect = false
   var currentHeaders = initialHeaders
   let deadline =
-    if request.options.timeoutMs >= 0:
-      initDeadline(initDuration(milliseconds = request.options.timeoutMs))
+    if hopRequest.options.timeoutMs >= 0:
+      initDeadline(initDuration(milliseconds = hopRequest.options.timeoutMs))
     else:
       Deadline()
 
   for redirectCount in 0 .. transport.maxRedirects:
     let client = connection.client
     block:
-      var hopRequest = request
-      hopRequest.url = $currentUrl
-      hopRequest.httpMethod = currentMethod
-      hopRequest.body = currentBody
-      hopRequest.multipartParts = currentMultipartParts
-
-      var hopHeaders = newHttpHeaders()
-      for name, value in currentHeaders.pairs:
-        hopHeaders.add(name, value)
-      if transport.cookieJar != nil and not hopHeaders.hasKey("cookie"):
+      let needsCookie = transport.cookieJar != nil and
+        not currentHeaders.hasHeader("cookie")
+      let needsProxyAuthorization = connection.proxyAuthorization.len > 0 and
+        not currentHeaders.hasHeader("proxy-authorization")
+      var hopHeaders = currentHeaders
+      if needsCookie or needsProxyAuthorization:
+        hopHeaders = newHttpHeaders()
+        if currentHeaders != nil:
+          for name, value in currentHeaders.pairs:
+            hopHeaders.add(name, value)
+      if needsCookie:
         let cookies = transport.cookieJar.cookieHeader(hopRequest.url)
         if cookies.len > 0:
           hopHeaders.add("cookie", cookies)
-      if connection.proxyAuthorization.len > 0 and
-          not hopHeaders.hasKey("proxy-authorization"):
+      if needsProxyAuthorization:
         hopHeaders.add("proxy-authorization", connection.proxyAuthorization)
 
-      client.headers = newHttpHeaders()
       let multipart = hopRequest.buildMultipart()
+      if multipart != nil:
+        # Nim's multipart formatter stores generated framing headers on the
+        # client. Ordinary requests never mutate this map and can reuse the
+        # empty instance without allocating a replacement per request.
+        client.headers = baseHttpHeaders()
+      connection.enableTcpNoDelay()
       let pendingHeaders = client.request(
         hopRequest.url,
         hopRequest.httpMethod.toStdMethod,
@@ -606,7 +603,7 @@ proc performRedirectingRequest(
         hopHeaders,
         multipart
       )
-      var waitMs = request.options.connectTimeoutMs
+      var waitMs = hopRequest.options.connectTimeoutMs
       if deadline.isInitialized:
         let remainingMs = deadline.remaining.durationMillisecondsCeil
         if remainingMs <= 0:
@@ -616,7 +613,7 @@ proc performRedirectingRequest(
         if waitMs < 0 or remainingMs < waitMs:
           waitMs = remainingMs
 
-      let token = request.options.cancellation
+      let token = hopRequest.options.cancellation
       if token != nil:
         let cancelled = token.cancellationFuture()
         if waitMs >= 0:
@@ -640,7 +637,10 @@ proc performRedirectingRequest(
             raise newJoubakoError(
               jeCancelled, token.reason, hopRequest.url
             )
-      elif waitMs >= 0 and not await pendingHeaders.withTimeout(waitMs):
+      elif waitMs >= 0 and not pendingHeaders.finished and
+          not await transport.timeoutScheduler.waitWithTimeout(
+            pendingHeaders, waitMs
+          ):
         client.close()
         raise newJoubakoError(
           jeTimeout,
@@ -649,7 +649,7 @@ proc performRedirectingRequest(
         )
 
       let raw = await pendingHeaders
-      if not request.options.onUploadProgress.isNil:
+      if not hopRequest.options.onUploadProgress.isNil:
         var uploadedBytes = int64(hopRequest.body.len)
         if multipart != nil:
           try:
@@ -658,22 +658,254 @@ proc performRedirectingRequest(
               .parseBiggestInt
           except ValueError:
             uploadedBytes = hopRequest.multipartWireSizeUpperBound()
-        request.options.onUploadProgress(
+        hopRequest.options.onUploadProgress(
           uploadedBytes,
           uploadedBytes
         )
-      result = await buildResponse(client, raw, hopRequest, deadline)
+      if multipart != nil:
+        client.headers = baseHttpHeaders()
+      let contentEncoding: string =
+        raw.headers.getOrDefault("content-encoding")
+      let decoded = hopRequest.hasResponseBody(int(raw.code)) and
+        contentEncoding.isCompressedEncoding
+      var responseHeaders = initHeaders()
+      for name, value in raw.headers.pairs:
+        # std/httpclient stores response names in lowercase. Preserve that
+        # parser guarantee instead of allocating another lowercase copy for
+        # both filtering and insertion on every response header.
+        if not decoded or name notin ["content-encoding", "content-length"]:
+          responseHeaders.addParsedHeader(name, value)
+
+      if not hopRequest.options.onResponseHeaders.isNil:
+        try:
+          hopRequest.options.onResponseHeaders(int(raw.code), responseHeaders)
+        except CatchableError as error:
+          client.close()
+          raise error.asJoubakoError(jeStream, hopRequest.url)
+
+      let declaredLengthText = raw.headers.getOrDefault("content-length")
+      var declaredLength = -1'i64
+      if declaredLengthText.len > 0:
+        try:
+          declaredLength = declaredLengthText.parseBiggestInt
+        except ValueError:
+          discard
+      if hopRequest.options.maxResponseBytes >= 0 and not decoded and
+          declaredLength > hopRequest.options.maxResponseBytes.int64:
+        raise newJoubakoError(
+          jeBodyTooLarge,
+          "declared response body exceeds the configured limit",
+          hopRequest.url,
+          int(raw.code)
+        )
+
+      let responseLimit = hopRequest.options.maxResponseBytes
+      let decoder = newContentDecoder(
+        if hopRequest.hasResponseBody(int(raw.code)):
+          contentEncoding
+        else:
+          "",
+        responseLimit,
+        hopRequest.url,
+        int(raw.code)
+      )
+      defer:
+        decoder.close()
+      var received = 0
+      var total = -1'i64
+      var responseBody: string
+      if decoder == nil and declaredLength >= 0:
+        total = declaredLength
+
+      proc acceptChunk(chunk: string) =
+        if responseLimit >= 0 and
+            (received > responseLimit or
+              chunk.len > responseLimit - received):
+          client.close()
+          raise newJoubakoError(
+            jeBodyTooLarge,
+            "response body exceeded the configured limit while streaming",
+            hopRequest.url,
+            int(raw.code)
+          )
+        received += chunk.len
+
+      proc finishChunk(chunk: string) =
+        if not hopRequest.options.streamResponse:
+          responseBody.add chunk
+        if not hopRequest.options.onDownloadProgress.isNil:
+          hopRequest.options.onDownloadProgress(int64(received), total)
+
+      proc deliver(chunk: string): Future[void] {.async.} =
+        acceptChunk(chunk)
+        let consuming = hopRequest.consumeDownloadChunk(chunk)
+        var consumeWaitMs = -1
+        if deadline.isInitialized:
+          let remainingMs = deadline.remaining.durationMillisecondsCeil
+          if remainingMs <= 0:
+            client.close()
+            raise newJoubakoError(
+              jeTimeout,
+              "request exceeded its total deadline while delivering the response",
+              hopRequest.url,
+              int(raw.code)
+            )
+          consumeWaitMs = remainingMs
+
+        let consumeToken = hopRequest.options.cancellation
+        if consumeToken != nil:
+          let cancelled = consumeToken.cancellationFuture()
+          if consumeWaitMs >= 0:
+            let timer = sleepAsync(consumeWaitMs)
+            await ((consuming or cancelled) or timer)
+            if not consuming.finished:
+              client.close()
+              if consumeToken.cancelled:
+                raise newJoubakoError(
+                  jeCancelled,
+                  consumeToken.reason,
+                  hopRequest.url,
+                  int(raw.code)
+                )
+              raise newJoubakoError(
+                jeTimeout,
+                "request exceeded its total deadline while delivering the response",
+                hopRequest.url,
+                int(raw.code)
+              )
+          else:
+            await (consuming or cancelled)
+            if not consuming.finished:
+              client.close()
+              raise newJoubakoError(
+                jeCancelled,
+                consumeToken.reason,
+                hopRequest.url,
+                int(raw.code)
+              )
+        elif consumeWaitMs >= 0 and not consuming.finished and
+            not await consuming.withTimeout(consumeWaitMs):
+          client.close()
+          raise newJoubakoError(
+            jeTimeout,
+            "request exceeded its total deadline while delivering the response",
+            hopRequest.url,
+            int(raw.code)
+          )
+
+        let consumed = await settle(
+          fallible(consuming), jeStream, hopRequest.url
+        )
+        if consumed.isErr:
+          raise consumed.error
+        finishChunk(chunk)
+
+      while true:
+        let reading = raw.bodyStream.read()
+        var bodyWaitMs = hopRequest.options.readTimeoutMs
+        if deadline.isInitialized:
+          let remainingMs = deadline.remaining.durationMillisecondsCeil
+          if remainingMs <= 0:
+            client.close()
+            raise newJoubakoError(
+              jeTimeout,
+              "request exceeded its total deadline while reading the response",
+              hopRequest.url,
+              int(raw.code)
+            )
+          if bodyWaitMs < 0 or remainingMs < bodyWaitMs:
+            bodyWaitMs = remainingMs
+
+        let bodyToken = hopRequest.options.cancellation
+        if bodyToken != nil:
+          let cancelled = bodyToken.cancellationFuture()
+          if bodyWaitMs >= 0:
+            let timer = sleepAsync(bodyWaitMs)
+            await ((reading or cancelled) or timer)
+            if not reading.finished:
+              client.close()
+              if bodyToken.cancelled:
+                raise newJoubakoError(
+                  jeCancelled,
+                  bodyToken.reason,
+                  hopRequest.url,
+                  int(raw.code)
+                )
+              raise newJoubakoError(
+                jeTimeout,
+                "response body read exceeded its deadline",
+                hopRequest.url,
+                int(raw.code)
+              )
+          else:
+            await (reading or cancelled)
+            if not reading.finished:
+              client.close()
+              raise newJoubakoError(
+                jeCancelled,
+                bodyToken.reason,
+                hopRequest.url,
+                int(raw.code)
+              )
+        elif bodyWaitMs >= 0 and not reading.finished and
+            not await transport.timeoutScheduler.waitWithTimeout(
+              reading, bodyWaitMs
+            ):
+          client.close()
+          raise newJoubakoError(
+            jeTimeout,
+            "response body read exceeded its deadline",
+            hopRequest.url,
+            int(raw.code)
+          )
+
+        let (hasValue, chunk) = await reading
+        if not hasValue:
+          break
+        if decoder == nil:
+          if hopRequest.options.onDownloadChunk.isNil and
+              hopRequest.options.onDownloadChunkAsync.isNil and
+              hopRequest.options.cancellation == nil:
+            acceptChunk(chunk)
+            finishChunk(chunk)
+          else:
+            await deliver(chunk)
+        else:
+          let decodedChunk = await settle(
+            fallible(decoder.decode(chunk, deliver)),
+            jeCompression,
+            hopRequest.url
+          )
+          if decodedChunk.isErr:
+            raise decodedChunk.error
+      decoder.finish()
+
+      let statusText =
+        if raw.status.len > 3:
+          raw.status[3 .. ^1].strip
+        else:
+          ""
+      result = types.Response(
+        status: int(raw.code),
+        statusText: statusText,
+        httpVersion: "HTTP/1.1",
+        headers: responseHeaders,
+        body: responseBody
+      )
       if transport.cookieJar != nil:
         for setCookie in result.headers.getAll("set-cookie"):
           discard transport.cookieJar.store(hopRequest.url, setCookie)
 
       if not result.status.isRedirect or
           not result.headers.contains("location"):
-        result.request = request
+        if followedRedirect:
+          result.request = move(originalRequest)
+        else:
+          result.request = move(hopRequest)
         reusable = true
         return
       if transport.maxRedirects == 0:
-        result.request = request
+        result.request = move(hopRequest)
         reusable = true
         return
       if redirectCount >= transport.maxRedirects:
@@ -685,92 +917,97 @@ proc performRedirectingRequest(
         )
 
       let nextUrl = redirectedUrl(currentUrl, result.headers.get("location"))
-      request.validateAllowedHost(nextUrl)
+      hopRequest.validateAllowedHost(nextUrl)
+      if not followedRedirect:
+        # Preserve the public response contract while keeping the common
+        # non-redirect path move-only. Redirects pay this snapshot cost once,
+        # regardless of the number of hops.
+        originalRequest = move(hopRequest)
+        hopRequest = originalRequest
+        followedRedirect = true
       let originChanged = not sameOrigin(currentUrl, nextUrl)
       if originChanged:
-        currentHeaders.del("authorization")
-        currentHeaders.del("cookie")
-        currentHeaders.del("proxy-authorization")
-        currentHeaders.del("host")
+        currentHeaders.deleteHeader("authorization")
+        currentHeaders.deleteHeader("cookie")
+        currentHeaders.deleteHeader("proxy-authorization")
+        currentHeaders.deleteHeader("host")
 
       if result.status in [301, 302, 303] and
-          currentMethod notin {rmGet, rmHead}:
-        currentMethod = rmGet
-        currentBody = ""
-        currentMultipartParts.setLen(0)
-        currentHeaders.del("content-length")
-        currentHeaders.del("content-type")
-        currentHeaders.del("transfer-encoding")
+          hopRequest.httpMethod notin {rmGet, rmHead}:
+        hopRequest.httpMethod = rmGet
+        hopRequest.body = ""
+        hopRequest.multipartParts.setLen(0)
+        currentHeaders.deleteHeader("content-length")
+        currentHeaders.deleteHeader("content-type")
+        currentHeaders.deleteHeader("transfer-encoding")
       if originChanged:
         transport.checkinConnection(move(connection))
         connection = transport.checkoutConnection(nextUrl)
       currentUrl = nextUrl
+      hopRequest.url = $currentUrl
+
+proc sendOwnedImpl(
+    transport: HttpTransport;
+    request: sink Request
+): Future[types.Response] =
+  let requestUrl = request.url
+  try:
+    if request.uploadSource != nil:
+      raise newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads require the HTTP/2 transport",
+        request.url
+      )
+    if request.options.cancellation != nil and
+        request.options.cancellation.cancelled:
+      raise newJoubakoError(
+        jeCancelled,
+        request.options.cancellation.reason,
+        request.url
+      )
+
+    var stdHeaders: HttpHeaders
+    for name, value in request.headers.pairs:
+      if stdHeaders == nil:
+        stdHeaders = newHttpHeaders()
+      stdHeaders.add(name, value)
+
+    # performRedirectingRequest carries one total deadline through connection,
+    # redirect, and bounded body reads. A second timer here duplicated the same
+    # protection and added a Future callback to every request.
+    result = transport.performRedirectingRequest(move(request), stdHeaders)
+
+    proc mapFailure(completed: Future[types.Response]) =
+      if completed.failed and not (completed.error of JoubakoError):
+        completed.error = newJoubakoError(
+          jeTransport, completed.error.msg, requestUrl
+        )
+
+    if result.finished:
+      result.mapFailure()
+    else:
+      result.addCallback(mapFailure)
+  except CatchableError as error:
+    result = newFuture[types.Response]("Joubako.HttpTransport.send")
+    if error of JoubakoError:
+      result.fail(error)
+    else:
+      result.fail(newJoubakoError(jeTransport, error.msg, requestUrl))
+
+method supportsOwnedRequestDispatch*(transport: HttpTransport): bool =
+  discard transport
+  true
+
+method sendOwned*(
+    transport: HttpTransport;
+    request: sink Request
+): Future[types.Response] =
+  transport.sendOwnedImpl(move(request))
 
 method send*(
     transport: HttpTransport;
     request: Request
-): Future[types.Response] {.async.} =
-  if request.uploadSource != nil:
-    raise newJoubakoError(
-      jeInvalidRequest,
-      "streaming uploads require the HTTP/2 transport",
-      request.url
-    )
-  if request.options.cancellation != nil and
-      request.options.cancellation.cancelled:
-    raise newJoubakoError(
-      jeCancelled,
-      request.options.cancellation.reason,
-      request.url
-    )
-
-  var stdHeaders = newHttpHeaders()
-  for name, value in request.headers.pairs:
-    stdHeaders.add(name, value)
-  if not request.headers.contains("accept-encoding"):
-    stdHeaders.add("accept-encoding", "gzip, deflate")
-
-  try:
-    let pending = transport.performRedirectingRequest(request, stdHeaders)
-
-    let token = request.options.cancellation
-    if token != nil:
-      let cancelled = token.cancellationFuture()
-      if request.options.timeoutMs >= 0:
-        let deadline = sleepAsync(request.options.timeoutMs)
-        await ((pending or cancelled) or deadline)
-        if pending.finished:
-          discard
-        elif token.cancelled:
-          raise newJoubakoError(
-            jeCancelled,
-            token.reason,
-            request.url
-          )
-        else:
-          raise newJoubakoError(
-            jeTimeout,
-            "request exceeded its deadline",
-            request.url
-          )
-      else:
-        await (pending or cancelled)
-        if not pending.finished:
-          raise newJoubakoError(
-            jeCancelled,
-            token.reason,
-            request.url
-          )
-    elif request.options.timeoutMs >= 0:
-      if not await pending.withTimeout(request.options.timeoutMs):
-        raise newJoubakoError(
-          jeTimeout,
-          "request exceeded its deadline",
-          request.url
-        )
-
-    result = await pending
-  except JoubakoError:
-    raise
-  except CatchableError as error:
-    raise newJoubakoError(jeTransport, error.msg, request.url)
+): Future[types.Response] =
+  ## Preserve the established public value-parameter transport API while the
+  ## Client's common single-attempt path can transfer ownership explicitly.
+  transport.sendOwnedImpl(request)

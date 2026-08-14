@@ -17,6 +17,13 @@ suite "Headers":
     headers.set("  x-mode  ", "strict")
     check headers.get("x-mode") == "strict"
 
+  test "parsed headers retain normalized names without changing semantics":
+    var headers = initHeaders()
+    headers.addParsedHeader("x-fast", "one")
+    headers.addParsedHeader("X-Fast", "two")
+    headers.addParsedHeader("  x-fast  ", "three")
+    check headers.getAll("x-fast") == @["one", "two", "three"]
+
   test "add retains repeated values":
     var headers = initHeaders()
     headers.add("set-cookie", "a=1")

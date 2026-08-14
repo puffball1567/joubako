@@ -16,6 +16,14 @@ method supportsRuntimeMultipartLimits*(transport: Transport): bool {.base.} =
   discard transport
   false
 
+method supportsOwnedRequestDispatch*(transport: Transport): bool {.base.} =
+  ## True when `sendOwned` moves the request into the eventual Response rather
+  ## than retaining or copying the caller's value. The client uses this only
+  ## for its single-attempt path; custom transports keep the compatible
+  ## value-parameter dispatch below unless they explicitly opt in.
+  discard transport
+  false
+
 method send*(transport: Transport; request: Request): Future[Response] {.base.} =
   result = newFuture[Response]("Joubako.Transport.send")
   result.fail(newJoubakoError(
@@ -23,3 +31,12 @@ method send*(transport: Transport; request: Request): Future[Response] {.base.} 
     "transport does not implement send",
     request.url
   ))
+
+method sendOwned*(
+    transport: Transport;
+    request: sink Request
+): Future[Response] {.base.} =
+  ## Ownership-aware dispatch hook. Its default deliberately delegates to the
+  ## long-standing public method so existing third-party transports retain
+  ## their source and behavioural compatibility.
+  transport.send(request)
