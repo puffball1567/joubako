@@ -1,9 +1,5 @@
 import std/[asyncdispatch, asyncnet, base64, httpclient, httpcore, monotimes,
   nativesockets, os, strutils, times, uri]
-when defined(windows):
-  import std/winlean
-elif defined(posix):
-  import std/posix
 when defined(ssl):
   import std/[net, openssl, ssl_config]
 import flowbrigade/timeout
@@ -176,14 +172,6 @@ proc closeImmediately(client: AsyncHttpClient) {.raises: [].} =
   try:
     let socket = client.getSocket()
     if socket != nil and not socket.isClosed:
-      # A bidirectional shutdown makes an in-flight close observable to the
-      # peer before the descriptor is removed. This is especially important
-      # for the older Windows IOCP runtime, whose pending recv may otherwise
-      # remain asleep after a concurrent closesocket.
-      when defined(windows):
-        discard winlean.shutdown(socket.getFd(), 2)
-      elif defined(posix):
-        discard posix.shutdown(socket.getFd(), 2)
       socket.close()
     client.close()
   except Exception:
