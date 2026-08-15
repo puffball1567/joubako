@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.1"
+version       = "0.2.2"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
@@ -136,6 +136,7 @@ task fuzzOrc, "Run deterministic structured-input fuzzing with ORC":
 const asanPrograms = [
   ("structured-inputs", "tests/fuzz_inputs.nim"),
   ("async-file-lifecycle", "tests/result_leak_probe.nim"),
+  ("http1-lifecycle", "tests/http1_leak_probe.nim"),
 ]
 
 proc runAsanSuite(memoryManager: string) =
@@ -258,6 +259,7 @@ task e2eHostOrc, "Run the cross-process HTTP integration suite with ORC without 
 
 const leakPrograms = [
   ("core", "tests/leak_probe.nim", false),
+  ("http1", "tests/http1_leak_probe.nim", false),
   ("result", "tests/result_leak_probe.nim", true),
   ("compression", "tests/compression_leak_probe.nim", true),
   ("cookiejar", "tests/cookiejar_leak_probe.nim", true),

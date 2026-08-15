@@ -5,6 +5,7 @@
 
 import std/asyncdispatch
 import ./types
+import ./internal/futurevalue
 
 type
   JResult*[T] = object
@@ -47,6 +48,13 @@ template value*[T](outcome: JResult[T]): untyped =
 template error*[T](outcome: JResult[T]): untyped =
   outcome.getError()
 
+proc takeValue*[T](outcome: var JResult[T]): T =
+  ## Consumes a successful value without incrementing reference counts for
+  ## every field it owns. This is useful at internal asynchronous boundaries;
+  ## callers must not inspect the value again after taking it.
+  assert outcome.isOk, "cannot take the value of an error JResult"
+  result = move(outcome.value)
+
 proc fallible*[T](future: sink Future[T]): FallibleFuture[T] =
   ## Marks a raw Future as single-consumer and non-awaitable.
   result.raw = move(future)
@@ -86,7 +94,7 @@ proc settle*[T](
         pending.read()
         destination.complete(ok())
       else:
-        destination.complete(ok(pending.read()))
+        destination.complete(ok(pending.takeFutureValue()))
     pending = nil
   )
 
@@ -109,7 +117,7 @@ proc settleResult*[T](
       pending.errorStackTrace.setLen(0)
       destination.complete(err[T](failure.asJoubakoError(kind, url)))
     else:
-      destination.complete(pending.read())
+      destination.complete(pending.takeFutureValue())
     pending = nil
   )
 

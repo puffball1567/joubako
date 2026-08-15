@@ -2,6 +2,7 @@ import std/[asyncdispatch, strutils, times, uri]
 import flowbrigade/[backoff, bulkhead, circuit_breaker, retry, timeout]
 import flowbrigade/ratelimit/token_bucket
 import ./[http_retry, opentelemetry, query, result, transport, types]
+import ./internal/futurevalue
 
 type
   StatusValidator* = proc(status: int): bool {.closure.}
@@ -31,6 +32,17 @@ type
     bulkhead: ref Bulkhead
     rateLimiter: ref TokenBucket
     telemetry: OpenTelemetryConfig
+
+proc addClientCallback(
+    source: FutureBase;
+    callback: proc() {.closure.}
+) =
+  ## asyncdispatch requires a gcsafe callback even though its dispatcher runs
+  ## this closure on the current event-loop thread. User status validators are
+  ## intentionally not required to claim thread safety.
+  type SafeCallback = proc() {.closure, gcsafe.}
+  {.cast(gcsafe).}:
+    source.addCallback(cast[SafeCallback](callback))
 
 proc useOpenTelemetry*(
     client: Client;
@@ -196,18 +208,21 @@ func resolveUrl(client: Client; path: string): string =
     return path
   $combine(parseUri(client.baseUrl), parsed)
 
-proc requestResult(
+proc prepareRequest(
     client: Client;
     httpMethod: RequestMethod;
     path: string;
-    body = "";
-    headers = initHeaders();
-    options: RequestOptions = RequestOptions();
-    multipartParts: seq[MultipartPart] = @[];
-    uploadSource: UploadSource = nil
-): Future[JResult[Response]] {.async.} =
+    body: string;
+    headers: Headers;
+    options: RequestOptions;
+    multipartParts: seq[MultipartPart];
+    uploadSource: UploadSource
+): JResult[Request] =
+  ## Request construction is shared by the lightweight single-attempt path
+  ## and the full interceptor/resilience path. This keeps every method and
+  ## body format under the same defaults and validation contract.
   if client == nil or client.transport == nil:
-    return err[Response](newJoubakoError(
+    return err[Request](newJoubakoError(
       jeInvalidRequest, "client has no transport"
     ))
 
@@ -247,11 +262,11 @@ proc requestResult(
 
   let url = client.resolveUrl(path)
   if url.len == 0:
-    return err[Response](newJoubakoError(
+    return err[Request](newJoubakoError(
       jeInvalidRequest, "request URL is empty"
     ))
 
-  var request = Request(
+  ok(Request(
     httpMethod: httpMethod,
     url: url,
     headers: mergedHeaders,
@@ -259,7 +274,215 @@ proc requestResult(
     multipartParts: multipartParts,
     uploadSource: uploadSource,
     options: effectiveOptions
+  ))
+
+proc requestValidationError(
+    request: Request;
+    emptyUrlMessage = "request URL is empty"
+): ref JoubakoError =
+  if request.url.len == 0:
+    return newJoubakoError(jeInvalidRequest, emptyUrlMessage)
+  if request.url.contains({'\r', '\n'}):
+    return newJoubakoError(
+      jeInvalidRequest,
+      "request URL contains a line break",
+      request.url
+    )
+  for name, value in request.headers.pairs:
+    if name.len == 0 or name.contains({'\r', '\n'}) or
+        value.contains({'\r', '\n'}):
+      return newJoubakoError(
+        jeInvalidRequest,
+        "request contains an invalid header",
+        request.url
+      )
+
+  if request.uploadSource != nil:
+    if request.body.len > 0 or request.multipartParts.len > 0:
+      return newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads cannot also contain a buffered or multipart body",
+        request.url
+      )
+    if request.uploadSource.read.isNil or request.uploadSource.setWake.isNil:
+      return newJoubakoError(
+        jeInvalidRequest, "streaming upload source is incomplete", request.url
+      )
+    if request.headers.contains("content-length"):
+      return newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads determine their length from end-of-stream",
+        request.url
+      )
+    if request.options.retry.maxAttempts >= 2:
+      return newJoubakoError(
+        jeInvalidRequest,
+        "streaming uploads cannot be retried because the body is not replayable",
+        request.url
+      )
+
+  if request.multipartParts.len > 0:
+    if request.body.len > 0:
+      return newJoubakoError(
+        jeInvalidRequest,
+        "multipart requests cannot also contain a buffered body",
+        request.url
+      )
+    if request.headers.contains("content-type"):
+      return newJoubakoError(
+        jeInvalidRequest,
+        "file-backed multipart content type and boundary are generated automatically",
+        request.url
+      )
+    for part in request.multipartParts:
+      if part.name.len == 0 or
+          part.name.contains({'\0', '\r', '\n', '"'}):
+        return newJoubakoError(
+          jeInvalidRequest, "invalid multipart field name", request.url
+        )
+      if part.filename.contains({'\0', '\r', '\n', '"'}):
+        return newJoubakoError(
+          jeInvalidRequest, "invalid multipart filename", request.url
+        )
+      if part.contentType.contains({'\0', '\r', '\n'}):
+        return newJoubakoError(
+          jeInvalidRequest, "invalid multipart content type", request.url
+        )
+      if part.filePath.len > 0 and part.filename.len == 0:
+        return newJoubakoError(
+          jeInvalidRequest,
+          "file-backed multipart part has no transmitted filename",
+          request.url
+        )
+      if part.filePath.len > 0 and part.body.len > 0:
+        return newJoubakoError(
+          jeInvalidRequest,
+          "file-backed multipart part cannot also contain buffered data",
+          request.url
+        )
+
+  if request.options.maxRequestBytes >= 0 and
+      request.body.len > request.options.maxRequestBytes:
+    return newJoubakoError(
+      jeBodyTooLarge,
+      "request body exceeded the configured limit",
+      request.url
+    )
+
+  if request.options.cancellation != nil and
+      request.options.cancellation.cancelled:
+    return newJoubakoError(
+      jeCancelled,
+      request.options.cancellation.reason,
+      request.url
+    )
+
+proc evaluateResponseValue(
+    client: Client;
+    response: sink Response
+): JResult[Response] =
+  ## Central post-transport safety contract shared by compatible custom
+  ## transports and the ownership-aware built-in path.
+  # A completed response must not retain the producer closures or queued
+  # upload chunks. The ordinary request metadata remains inspectable.
+  response.request.uploadSource = nil
+
+  if response.request.options.cancellation != nil and
+      response.request.options.cancellation.cancelled:
+    return err[Response](newJoubakoError(
+      jeCancelled,
+      response.request.options.cancellation.reason,
+      response.request.url
+    ))
+
+  if response.request.options.maxResponseBytes >= 0 and
+      response.body.len > response.request.options.maxResponseBytes:
+    return err[Response](newJoubakoError(
+      jeBodyTooLarge,
+      "response body exceeded the configured limit",
+      response.request.url,
+      response.status
+    ))
+
+  if client.validateStatus != nil:
+    var accepted = false
+    try:
+      accepted = client.validateStatus(response.status)
+    except CatchableError as error:
+      return err[Response](error.asJoubakoError(
+        jeInvalidRequest, response.request.url
+      ))
+    if not accepted:
+      let statusError = newJoubakoError(
+        jeHttpStatus,
+        "HTTP request failed with status " & $response.status,
+        response.request.url,
+        response.status,
+        parseRetryAfterMs(response.headers.get("retry-after"))
+      )
+      statusError.attachResponse(response)
+      return err[Response](statusError)
+  ok(move(response))
+
+proc evaluateResponse(
+    client: Client;
+    request: Request;
+    transportResult: var JResult[Response]
+): JResult[Response] =
+  ## Apply the same post-transport safety contract on both orchestration
+  ## paths. Keeping this independent of the request method prevents the
+  ## lightweight path from becoming a benchmark-specific GET shortcut.
+  if transportResult.isErr:
+    return err[Response](transportResult.error)
+  var response = transportResult.takeValue()
+
+  # Transports normally attach the request they actually dispatched. Avoid
+  # replacing that value with another deep copy of the same strings, headers,
+  # multipart parts and options on every successful response. Custom
+  # transports may omit it, in which case the client supplies the contract.
+  if response.request.url.len == 0:
+    response.request = request
+  client.evaluateResponseValue(move(response))
+
+proc evaluateOwnedResponse(
+    client: Client;
+    transportResult: var JResult[Response]
+): JResult[Response] =
+  ## Evaluate a response from a transport that guarantees the dispatched
+  ## Request is moved into Response.request. This avoids keeping a second full
+  ## Request alive solely for post-dispatch checks on the common success path.
+  if transportResult.isErr:
+    return err[Response](transportResult.error)
+  var response = transportResult.takeValue()
+  if response.request.url.len == 0:
+    return err[Response](newJoubakoError(
+      jeTransport,
+      "owned request transport returned no request metadata"
+    ))
+  client.evaluateResponseValue(move(response))
+
+proc requestResult(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    body = "";
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions();
+    multipartParts: seq[MultipartPart] = @[];
+    uploadSource: UploadSource = nil
+): Future[JResult[Response]] {.async.} =
+  var prepared = client.prepareRequest(
+    httpMethod,
+    path,
+    body,
+    headers,
+    options,
+    multipartParts,
+    uploadSource
   )
+  if prepared.isErr:
+    return err[Response](prepared.error)
+  var request = prepared.takeValue()
 
   for entry in client.requestInterceptors:
     if request.options.cancellation != nil and
@@ -272,111 +495,18 @@ proc requestResult(
       intercepted = entry.handler(request)
     except CatchableError as error:
       return err[Response](error.asJoubakoError(jeTransport, request.url))
-    let interceptorResult = await settle(
+    var interceptorResult = await settle(
       fallible(intercepted), jeTransport, request.url
     )
     if interceptorResult.isErr:
       return err[Response](interceptorResult.error)
-    request = interceptorResult.value
+    request = interceptorResult.takeValue()
 
-  if request.url.len == 0:
-    return err[Response](newJoubakoError(
-      jeInvalidRequest, "interceptor produced an empty URL"
-    ))
-  if request.url.contains({'\r', '\n'}):
-    return err[Response](newJoubakoError(
-      jeInvalidRequest,
-      "request URL contains a line break",
-      request.url
-    ))
-  for name, value in request.headers.pairs:
-    if name.len == 0 or name.contains({'\r', '\n'}) or
-        value.contains({'\r', '\n'}):
-      return err[Response](newJoubakoError(
-        jeInvalidRequest,
-        "request contains an invalid header",
-        request.url
-      ))
-
-  if request.uploadSource != nil:
-    if request.body.len > 0 or request.multipartParts.len > 0:
-      return err[Response](newJoubakoError(
-        jeInvalidRequest,
-        "streaming uploads cannot also contain a buffered or multipart body",
-        request.url
-      ))
-    if request.uploadSource.read.isNil or request.uploadSource.setWake.isNil:
-      return err[Response](newJoubakoError(
-        jeInvalidRequest, "streaming upload source is incomplete", request.url
-      ))
-    if request.headers.contains("content-length"):
-      return err[Response](newJoubakoError(
-        jeInvalidRequest,
-        "streaming uploads determine their length from end-of-stream",
-        request.url
-      ))
-    if request.options.retry.maxAttempts >= 2:
-      return err[Response](newJoubakoError(
-        jeInvalidRequest,
-        "streaming uploads cannot be retried because the body is not replayable",
-        request.url
-      ))
-
-  if request.multipartParts.len > 0:
-    if request.body.len > 0:
-      return err[Response](newJoubakoError(
-        jeInvalidRequest,
-        "multipart requests cannot also contain a buffered body",
-        request.url
-      ))
-    if request.headers.contains("content-type"):
-      return err[Response](newJoubakoError(
-        jeInvalidRequest,
-        "file-backed multipart content type and boundary are generated automatically",
-        request.url
-      ))
-    for part in request.multipartParts:
-      if part.name.len == 0 or
-          part.name.contains({'\0', '\r', '\n', '"'}):
-        return err[Response](newJoubakoError(
-          jeInvalidRequest, "invalid multipart field name", request.url
-        ))
-      if part.filename.contains({'\0', '\r', '\n', '"'}):
-        return err[Response](newJoubakoError(
-          jeInvalidRequest, "invalid multipart filename", request.url
-        ))
-      if part.contentType.contains({'\0', '\r', '\n'}):
-        return err[Response](newJoubakoError(
-          jeInvalidRequest, "invalid multipart content type", request.url
-        ))
-      if part.filePath.len > 0 and part.filename.len == 0:
-        return err[Response](newJoubakoError(
-          jeInvalidRequest,
-          "file-backed multipart part has no transmitted filename",
-          request.url
-        ))
-      if part.filePath.len > 0 and part.body.len > 0:
-        return err[Response](newJoubakoError(
-          jeInvalidRequest,
-          "file-backed multipart part cannot also contain buffered data",
-          request.url
-        ))
-
-  if request.options.maxRequestBytes >= 0 and
-      request.body.len > request.options.maxRequestBytes:
-    return err[Response](newJoubakoError(
-      jeBodyTooLarge,
-      "request body exceeded the configured limit",
-      request.url
-    ))
-
-  if request.options.cancellation != nil and
-      request.options.cancellation.cancelled:
-    return err[Response](newJoubakoError(
-      jeCancelled,
-      request.options.cancellation.reason,
-      request.url
-    ))
+  let validationError = request.requestValidationError(
+    "interceptor produced an empty URL"
+  )
+  if validationError != nil:
+    return err[Response](validationError)
 
   if client.rateLimiter != nil:
     let decision = client.rateLimiter[].consume()
@@ -422,6 +552,26 @@ proc requestResult(
       Deadline()
 
   var completedAttempts = 0
+  proc dispatchAttempt(
+      attemptRequest: Request
+  ): Future[JResult[Response]] =
+    inc completedAttempts
+    try:
+      settle(
+        fallible(client.transport.send(attemptRequest)),
+        jeTransport,
+        request.url
+      )
+    except CatchableError as error:
+      completedResult(err[Response](
+        error.asJoubakoError(jeTransport, request.url)
+      ))
+
+  proc evaluateAttempt(
+      transportResult: var JResult[Response]
+  ): JResult[Response] =
+    client.evaluateResponse(request, transportResult)
+
   proc executeAttempt(): Future[JResult[Response]] {.async.} =
     var attemptRequest = request
     if retryDeadline.isInitialized:
@@ -434,61 +584,8 @@ proc requestResult(
         ))
       attemptRequest.options.timeoutMs = remainingMs
 
-    inc completedAttempts
-    var transportFuture: Future[Response]
-    try:
-      transportFuture = client.transport.send(attemptRequest)
-    except CatchableError as error:
-      return err[Response](error.asJoubakoError(jeTransport, request.url))
-
-    let transportResult = await settle(
-      fallible(transportFuture), jeTransport, request.url
-    )
-    if transportResult.isErr:
-      return err[Response](transportResult.error)
-    var response = transportResult.value
-
-    response.request = request
-    # A completed response must not retain the producer closures or queued
-    # upload chunks. The ordinary request metadata remains inspectable.
-    response.request.uploadSource = nil
-
-    if request.options.cancellation != nil and
-        request.options.cancellation.cancelled:
-      return err[Response](newJoubakoError(
-        jeCancelled,
-        request.options.cancellation.reason,
-        request.url
-      ))
-
-    if request.options.maxResponseBytes >= 0 and
-        response.body.len > request.options.maxResponseBytes:
-      return err[Response](newJoubakoError(
-        jeBodyTooLarge,
-        "response body exceeded the configured limit",
-        request.url,
-        response.status
-      ))
-
-    if client.validateStatus != nil:
-      var accepted = false
-      try:
-        accepted = client.validateStatus(response.status)
-      except CatchableError as error:
-        return err[Response](error.asJoubakoError(
-          jeInvalidRequest, request.url
-        ))
-      if not accepted:
-        let statusError = newJoubakoError(
-          jeHttpStatus,
-          "HTTP request failed with status " & $response.status,
-          request.url,
-          response.status,
-          parseRetryAfterMs(response.headers.get("retry-after"))
-        )
-        statusError.attachResponse(response)
-        return err[Response](statusError)
-    return ok(response)
+    var transportResult = await dispatchAttempt(attemptRequest)
+    return evaluateAttempt(transportResult)
 
   var attemptResult: JResult[Response]
   if retryEnabled:
@@ -544,7 +641,8 @@ proc requestResult(
         break
       inc attempt
   else:
-    attemptResult = await executeAttempt()
+    var transportResult = await dispatchAttempt(request)
+    attemptResult = evaluateAttempt(transportResult)
     if attemptResult.isErr:
       attemptResult.error.attempts = completedAttempts
 
@@ -562,7 +660,7 @@ proc requestResult(
   if attemptResult.isErr:
     attemptResult.error.attempts = completedAttempts
     return err[Response](attemptResult.error)
-  var response = attemptResult.value
+  var response = attemptResult.takeValue()
   response.attempts = completedAttempts
 
   for entry in client.responseInterceptors:
@@ -580,14 +678,15 @@ proc requestResult(
       let interceptorError = error.asJoubakoError(jeTransport, request.url)
       interceptorError.attempts = completedAttempts
       return err[Response](interceptorError)
-    let interceptorResult = await settle(
+    var interceptorResult = await settle(
       fallible(intercepted), jeTransport, request.url
     )
     if interceptorResult.isErr:
       interceptorResult.error.attempts = completedAttempts
       return err[Response](interceptorResult.error)
-    response = interceptorResult.value
-    response.request = request
+    response = interceptorResult.takeValue()
+    if response.request.url.len == 0:
+      response.request = request
     response.request.uploadSource = nil
     response.attempts = completedAttempts
 
@@ -603,7 +702,7 @@ proc requestResult(
     return err[Response](limitError)
   return ok(response)
 
-proc observedRequestResult(
+proc observedRequestResultWithTelemetry(
     client: Client;
     httpMethod: RequestMethod;
     path: string;
@@ -663,6 +762,163 @@ proc observedRequestResult(
       )
   return outcome
 
+func canUseSingleAttemptPath(
+    client: Client;
+    options: RequestOptions
+): bool =
+  ## This path is method- and payload-independent. It is selected solely by
+  ## whether request-level orchestration is required.
+  if client == nil or client.transport == nil:
+    return false
+  let maxAttempts =
+    if options.retry.maxAttempts != 0:
+      options.retry.maxAttempts
+    else:
+      client.defaultOptions.retry.maxAttempts
+  maxAttempts < 2 and
+    client.requestInterceptors.len == 0 and
+    client.responseInterceptors.len == 0 and
+    client.circuitBreaker == nil and
+    client.bulkhead == nil and
+    client.rateLimiter == nil
+
+proc singleAttemptResult(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    body: string;
+    headers: Headers;
+    options: RequestOptions;
+    multipartParts: seq[MultipartPart];
+    uploadSource: UploadSource
+): Future[JResult[Response]] =
+  ## Avoid the full async retry/interceptor state machine when none of those
+  ## features are active. All methods, headers, limits and body formats share
+  ## the same preparation, validation and response evaluation as the full
+  ## path, and this Future still cannot fail with a CatchableError.
+  result = newFuture[JResult[Response]]("Joubako.Client.singleAttemptResult")
+  let destination = result
+  var request: Request
+  var pending: Future[Response]
+  var ownedDispatch = false
+  var requestUrl: string
+
+  try:
+    var prepared = client.prepareRequest(
+      httpMethod,
+      path,
+      body,
+      headers,
+      options,
+      multipartParts,
+      uploadSource
+    )
+    if prepared.isErr:
+      destination.complete(err[Response](prepared.error))
+      return
+    request = prepared.takeValue()
+
+    let validationError = request.requestValidationError()
+    if validationError != nil:
+      destination.complete(err[Response](validationError))
+      return
+
+    requestUrl = request.url
+    ownedDispatch = client.transport.supportsOwnedRequestDispatch()
+    if ownedDispatch:
+      pending = client.transport.sendOwned(move(request))
+    else:
+      pending = client.transport.send(request)
+    if pending == nil:
+      let failure = newJoubakoError(
+        jeTransport, "transport returned a nil Future", requestUrl
+      )
+      failure.attempts = 1
+      destination.complete(err[Response](failure))
+      return
+  except CatchableError as error:
+    let failure = error.asJoubakoError(jeTransport, requestUrl)
+    failure.attempts = if requestUrl.len == 0: 0 else: 1
+    destination.complete(err[Response](failure))
+    return
+
+  pending.addClientCallback(proc() =
+    pending.clearCallbacks()
+    if pending.failed:
+      var failure = move(pending.error)
+      pending.errorStackTrace.setLen(0)
+      let structured = failure.asJoubakoError(jeTransport, requestUrl)
+      structured.attempts = 1
+      destination.complete(err[Response](structured))
+      pending = nil
+      return
+
+    try:
+      var response = pending.takeFutureValue()
+      response.attempts = 1
+      var transportOutcome = ok(move(response))
+      var outcome =
+        if ownedDispatch:
+          client.evaluateOwnedResponse(transportOutcome)
+        else:
+          client.evaluateResponse(request, transportOutcome)
+      if outcome.isErr:
+        outcome.error.attempts = 1
+      destination.complete(move(outcome))
+    except CatchableError as error:
+      let failure = error.asJoubakoError(jeTransport, requestUrl)
+      failure.attempts = 1
+      destination.complete(err[Response](failure))
+    pending = nil
+  )
+
+proc observedRequestResult(
+    client: Client;
+    httpMethod: RequestMethod;
+    path: string;
+    body = "";
+    headers = initHeaders();
+    options: RequestOptions = RequestOptions();
+    multipartParts: seq[MultipartPart] = @[];
+    uploadSource: UploadSource = nil
+): Future[JResult[Response]] =
+  ## Avoid constructing tracing headers and another async state machine when
+  ## telemetry is disabled, which is the ordinary request path.
+  if client == nil or client.telemetry == nil:
+    when not defined(joubakoDisableSingleAttemptFastPath):
+      if client.canUseSingleAttemptPath(options):
+        return client.singleAttemptResult(
+          httpMethod,
+          path,
+          body,
+          headers,
+          options,
+          multipartParts,
+          uploadSource
+        )
+    return settleResult(
+      fallible(client.requestResult(
+        httpMethod,
+        path,
+        body,
+        headers,
+        options,
+        multipartParts,
+        uploadSource
+      )),
+      jeTransport,
+      path
+    )
+  client.observedRequestResultWithTelemetry(
+    httpMethod,
+    path,
+    body,
+    headers,
+    options,
+    multipartParts,
+    uploadSource
+  )
+
 proc request*(
     client: Client;
     httpMethod: RequestMethod;
@@ -671,13 +927,7 @@ proc request*(
     headers = initHeaders();
     options: RequestOptions = RequestOptions()
 ): Future[JResult[Response]] =
-  settleResult(
-    fallible(client.observedRequestResult(
-      httpMethod, path, body, headers, options
-    )),
-    jeTransport,
-    path
-  )
+  client.observedRequestResult(httpMethod, path, body, headers, options)
 
 proc requestMultipart*(
     client: Client;
@@ -689,16 +939,12 @@ proc requestMultipart*(
 ): Future[JResult[Response]] =
   ## Dispatches multipart metadata without materializing file-backed parts.
   ## The HTTP transport supplies the boundary and streams each file path.
-  settleResult(
-    fallible(client.observedRequestResult(
-      httpMethod,
-      path,
-      headers = headers,
-      options = options,
-      multipartParts = parts
-    )),
-    jeTransport,
-    path
+  client.observedRequestResult(
+    httpMethod,
+    path,
+    headers = headers,
+    options = options,
+    multipartParts = parts
   )
 
 proc requestUploadSource*(
@@ -711,16 +957,12 @@ proc requestUploadSource*(
 ): Future[JResult[Response]] =
   ## Low-level entry point used by bounded upload producers. Most callers
   ## should use `openUpload` from `joubako/uploadstream`.
-  settleResult(
-    fallible(client.observedRequestResult(
-      httpMethod,
-      path,
-      headers = headers,
-      options = options,
-      uploadSource = source
-    )),
-    jeTransport,
-    path
+  client.observedRequestResult(
+    httpMethod,
+    path,
+    headers = headers,
+    options = options,
+    uploadSource = source
   )
 
 proc get*(

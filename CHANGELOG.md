@@ -7,6 +7,56 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-14
+
+### Added
+
+- Reproducible sequential and 32-request concurrent HTTP/1.1 POST benchmarks
+  using a validated 1 KiB echo payload, plus workload and connection-mode
+  selectors for focused comparisons.
+- ARC and ORC HTTP/1.1 lifecycle probes in the sanitizer and Valgrind suites.
+- A controlled v0.2.2 benchmark update that publishes both Joubako's
+  sequential advantage and its remaining concurrent deficit against Chronos
+  v4.4.0 persistent connections.
+
+### Changed
+
+- Reduced common-path request and response copies by moving owned requests
+  through the built-in HTTP transport and consuming internally owned completed
+  Futures without exposing a custom await operation to applications.
+- Lazily allocate empty header tables, avoid redundant parsed-header
+  normalization, parse Content-Length once, cache invariant transport headers,
+  and bypass retry/interceptor orchestration when those features are unused.
+- Reworked timeout scheduling and connection-pool bookkeeping to reduce
+  per-request Future, callback, and sequence overhead while retaining bounded
+  deadlines, cancellation, redirects, streaming limits, and custom transport
+  compatibility.
+- Increased the default retained HTTP/1.1 idle connections from 8 to 32 so
+  ordinary 32-request batches do not close and recreate 24 connections after
+  every batch.
+- Clarified that the default HTTP/1.1 transport deliberately builds on Nim's
+  standard `asyncdispatch` and `httpclient` stack, while the explicitly
+  selected HTTP/2 transport uses the libcurl binding and system runtime.
+
+### Fixed
+
+- Made active HTTP cancellation close the owned connection through a private
+  per-exchange relay. This avoids callback replacement in Nim's shared
+  `Future or` combinator and keeps cancellation prompt on Windows as well as
+  Linux and macOS without adding overhead to requests that use no token. The
+  close path also handles the connect/cancel race before older Nim releases
+  mark an accepted socket as connected.
+
+### Performance
+
+- On the documented loopback host, v0.2.2 under ARC reached 8,478.5 sequential
+  and 20,875.0 concurrent GET operations per second. It was 2.0% faster than
+  Chronos persistent sequentially and 18.1% slower at 32-request concurrency.
+- Under ORC, v0.2.2 reached 8,298.5 sequential and 20,557.7 concurrent GET
+  operations per second. It was 3.0% faster sequentially and 17.7% slower at
+  32-request concurrency. These narrow loopback results are not universal
+  performance claims.
+
 ## [0.2.1] - 2026-08-12
 
 ### Added

@@ -4,6 +4,7 @@ This file maps the delivery order in `vision.md` to the current implementation.
 
 | Area | Status | Notes |
 | --- | --- | --- |
+| Runtime and HTTP transport position | Complete | The default HTTP/1.1 transport preserves `std/asyncdispatch` Future/await interoperability and builds on `std/httpclient`; Joubako does not own a private event loop or HTTP/1.1 parser. The explicitly selected HTTP/2 transport uses the declared libcurl Nim binding plus an HTTP/2-capable system libcurl while preserving the same public Future and Result contract. |
 | Common request/response/error contracts | Complete | `Future[JResult[T]]`, bounded HTTP error response snapshots without request secrets, attempt counts, cancellation, deadlines, limits, synchronous and backpressured asynchronous progress consumers |
 | FlowBrigade resilience | Complete | Async retry, circuit breaker, token-bucket rate limit, bulkhead |
 | HTTP(S) and JSON | Complete | Verified TLS chain and hostname/IP by default, custom CA/mTLS/cipher configuration, HTTP/SOCKS proxy selection with environment and NO_PROXY rules, keep-alive reuse keyed by origin and proxy, bounded idle pool, bounded gzip/deflate decoding, bounded opt-in cookie jar across redirects, streaming limit checks, validated Range download resume, redirects, typed JSON |
