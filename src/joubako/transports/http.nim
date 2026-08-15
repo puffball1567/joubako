@@ -163,6 +163,32 @@ proc waitWithTimeout[T](
       destination.complete(true)
   )
 
+proc registerConnectionCancellation(
+    token: CancellationToken;
+    client: AsyncHttpClient
+): tuple[active: ref bool, signal: Future[void]] =
+  ## Register exactly once per HTTP exchange. The token callback closes the
+  ## owned socket before completing the private relay, so cancellation does
+  ## not depend on a nested Future `or` waking a platform selector. Consumers
+  ## race the relay rather than the shared token Future and therefore cannot
+  ## overwrite this connection-closing callback.
+  new(result.active)
+  result.active[] = true
+  result.signal = newFuture[void](
+    "Joubako.HttpTransport.cancellationRelay"
+  )
+  let active = result.active
+  let signal = result.signal
+  token.cancellationFuture().addCallback(proc() =
+    if active[]:
+      try:
+        client.close()
+      except Exception:
+        discard
+    if not signal.finished:
+      signal.complete()
+  )
+
 func defaultTlsOptions*(): TlsOptions =
   TlsOptions(verifyMode: tvmPeer)
 
@@ -603,6 +629,18 @@ proc performRedirectingRequest(
         hopHeaders,
         multipart
       )
+      let token = hopRequest.options.cancellation
+      let cancellation =
+        if token == nil:
+          default(tuple[active: ref bool, signal: Future[void]])
+        else:
+          registerConnectionCancellation(token, client)
+      defer:
+        if cancellation.active != nil:
+          cancellation.active[] = false
+        if cancellation.signal != nil:
+          cancellation.signal.clearCallbacks()
+
       var waitMs = hopRequest.options.connectTimeoutMs
       if deadline.isInitialized:
         let remainingMs = deadline.remaining.durationMillisecondsCeil
@@ -613,18 +651,18 @@ proc performRedirectingRequest(
         if waitMs < 0 or remainingMs < waitMs:
           waitMs = remainingMs
 
-      let token = hopRequest.options.cancellation
       if token != nil:
-        let cancelled = token.cancellationFuture()
+        let cancelled = cancellation.signal
         if waitMs >= 0:
           let timer = sleepAsync(waitMs)
           await ((pendingHeaders or cancelled) or timer)
+          if token.cancelled:
+            client.close()
+            raise newJoubakoError(
+              jeCancelled, token.reason, hopRequest.url
+            )
           if not pendingHeaders.finished:
             client.close()
-            if token.cancelled:
-              raise newJoubakoError(
-                jeCancelled, token.reason, hopRequest.url
-              )
             raise newJoubakoError(
               jeTimeout,
               "connection or response headers exceeded their deadline",
@@ -632,7 +670,7 @@ proc performRedirectingRequest(
             )
         else:
           await (pendingHeaders or cancelled)
-          if not pendingHeaders.finished:
+          if token.cancelled:
             client.close()
             raise newJoubakoError(
               jeCancelled, token.reason, hopRequest.url
@@ -754,19 +792,20 @@ proc performRedirectingRequest(
 
         let consumeToken = hopRequest.options.cancellation
         if consumeToken != nil:
-          let cancelled = consumeToken.cancellationFuture()
+          let cancelled = cancellation.signal
           if consumeWaitMs >= 0:
             let timer = sleepAsync(consumeWaitMs)
             await ((consuming or cancelled) or timer)
+            if consumeToken.cancelled:
+              client.close()
+              raise newJoubakoError(
+                jeCancelled,
+                consumeToken.reason,
+                hopRequest.url,
+                int(raw.code)
+              )
             if not consuming.finished:
               client.close()
-              if consumeToken.cancelled:
-                raise newJoubakoError(
-                  jeCancelled,
-                  consumeToken.reason,
-                  hopRequest.url,
-                  int(raw.code)
-                )
               raise newJoubakoError(
                 jeTimeout,
                 "request exceeded its total deadline while delivering the response",
@@ -775,7 +814,7 @@ proc performRedirectingRequest(
               )
           else:
             await (consuming or cancelled)
-            if not consuming.finished:
+            if consumeToken.cancelled:
               client.close()
               raise newJoubakoError(
                 jeCancelled,
@@ -818,19 +857,20 @@ proc performRedirectingRequest(
 
         let bodyToken = hopRequest.options.cancellation
         if bodyToken != nil:
-          let cancelled = bodyToken.cancellationFuture()
+          let cancelled = cancellation.signal
           if bodyWaitMs >= 0:
             let timer = sleepAsync(bodyWaitMs)
             await ((reading or cancelled) or timer)
+            if bodyToken.cancelled:
+              client.close()
+              raise newJoubakoError(
+                jeCancelled,
+                bodyToken.reason,
+                hopRequest.url,
+                int(raw.code)
+              )
             if not reading.finished:
               client.close()
-              if bodyToken.cancelled:
-                raise newJoubakoError(
-                  jeCancelled,
-                  bodyToken.reason,
-                  hopRequest.url,
-                  int(raw.code)
-                )
               raise newJoubakoError(
                 jeTimeout,
                 "response body read exceeded its deadline",
@@ -839,7 +879,7 @@ proc performRedirectingRequest(
               )
           else:
             await (reading or cancelled)
-            if not reading.finished:
+            if bodyToken.cancelled:
               client.close()
               raise newJoubakoError(
                 jeCancelled,
@@ -951,6 +991,7 @@ proc sendOwnedImpl(
     request: sink Request
 ): Future[types.Response] =
   let requestUrl = request.url
+  let cancellation = request.options.cancellation
   try:
     if request.uploadSource != nil:
       raise newJoubakoError(
@@ -973,15 +1014,20 @@ proc sendOwnedImpl(
       stdHeaders.add(name, value)
 
     # performRedirectingRequest carries one total deadline through connection,
-    # redirect, and bounded body reads. A second timer here duplicated the same
-    # protection and added a Future callback to every request.
+    # redirect, bounded body reads, and the platform-independent connection
+    # cancellation relay. No second public wrapper is required.
     result = transport.performRedirectingRequest(move(request), stdHeaders)
 
     proc mapFailure(completed: Future[types.Response]) =
-      if completed.failed and not (completed.error of JoubakoError):
-        completed.error = newJoubakoError(
-          jeTransport, completed.error.msg, requestUrl
-        )
+      if completed.failed:
+        if cancellation != nil and cancellation.cancelled:
+          completed.error = newJoubakoError(
+            jeCancelled, cancellation.reason, requestUrl
+          )
+        elif not (completed.error of JoubakoError):
+          completed.error = newJoubakoError(
+            jeTransport, completed.error.msg, requestUrl
+          )
 
     if result.finished:
       result.mapFailure()

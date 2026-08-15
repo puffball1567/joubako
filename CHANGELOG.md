@@ -38,6 +38,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   standard `asyncdispatch` and `httpclient` stack, while the explicitly
   selected HTTP/2 transport uses the libcurl binding and system runtime.
 
+### Fixed
+
+- Made active HTTP cancellation close the owned connection through a private
+  per-exchange relay. This avoids callback replacement in Nim's shared
+  `Future or` combinator and keeps cancellation prompt on Windows as well as
+  Linux and macOS without adding overhead to requests that use no token.
+
 ### Performance
 
 - On the documented loopback host, v0.2.2 under ARC reached 8,478.5 sequential

@@ -549,10 +549,22 @@ proc exerciseActiveCancellation(): Future[ErrorKind] {.async.} =
   await accepted
   token.cancel("superseded")
 
+  if not await pending.withTimeout(2_000):
+    server.close()
+    raise newException(
+      AssertionDefect,
+      "active cancellation did not complete the public request promptly"
+    )
+
   try:
     discard await pending
   except JoubakoError as error:
-    await serving
+    if not await serving.withTimeout(2_000):
+      server.close()
+      raise newException(
+        AssertionDefect,
+        "active cancellation did not close the HTTP connection promptly"
+      )
     return error.kind
   raise newException(AssertionDefect, "request should have been cancelled")
 

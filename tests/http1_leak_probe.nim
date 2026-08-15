@@ -45,9 +45,15 @@ proc exercise() {.async.} =
     defaultOptions = options
   )
   for _ in 0 ..< Iterations:
-    let outcome = await client.get("")
+    let token = newCancellationToken()
+    var requestOptions = options
+    requestOptions.cancellation = token
+    let outcome = await client.get("", options = requestOptions)
     doAssert outcome.isOk
     doAssert outcome.value.body == "ok"
+    # A token cancelled after its exchange must not close the pooled
+    # connection, and its registration must remain cycle-free under ARC/ORC.
+    token.cancel("request already completed")
   await serving
   transport.closeIdleConnections()
   # Successful races detach their callbacks immediately. Let the dispatcher
