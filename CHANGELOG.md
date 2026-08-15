@@ -43,7 +43,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Made active HTTP cancellation close the owned connection through a private
   per-exchange relay. This avoids callback replacement in Nim's shared
   `Future or` combinator and keeps cancellation prompt on Windows as well as
-  Linux and macOS without adding overhead to requests that use no token.
+  Linux and macOS without adding overhead to requests that use no token. The
+  close path also handles the connect/cancel race before older Nim releases
+  mark an accepted socket as connected.
 
 ### Performance
 

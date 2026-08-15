@@ -163,6 +163,20 @@ proc waitWithTimeout[T](
       destination.complete(true)
   )
 
+proc closeImmediately(client: AsyncHttpClient) {.raises: [].} =
+  ## `AsyncHttpClient.close` only closes its socket after std/httpclient has
+  ## marked the client connected. On older Nim releases, cancellation can win
+  ## after the peer accepts the socket but just before that flag is set. Close
+  ## the actual socket first so this narrow connect/cancel race cannot leave a
+  ## live connection behind; the public close then resets client state.
+  try:
+    let socket = client.getSocket()
+    if socket != nil and not socket.isClosed:
+      socket.close()
+    client.close()
+  except Exception:
+    discard
+
 proc registerConnectionCancellation(
     token: CancellationToken;
     client: AsyncHttpClient
@@ -181,10 +195,7 @@ proc registerConnectionCancellation(
   let signal = result.signal
   token.cancellationFuture().addCallback(proc() =
     if active[]:
-      try:
-        client.close()
-      except Exception:
-        discard
+      client.closeImmediately()
     if not signal.finished:
       signal.complete()
   )
@@ -200,10 +211,7 @@ proc `=copy`(destination: var PooledConnection; source: PooledConnection) {.
 
 proc close(connection: var PooledConnection) {.raises: [].} =
   if connection.client != nil:
-    try:
-      connection.client.close()
-    except Exception:
-      discard
+    connection.client.closeImmediately()
     connection.client = nil
   when defined(ssl):
     if connection.sslContext != nil:
