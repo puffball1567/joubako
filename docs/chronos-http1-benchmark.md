@@ -1,8 +1,8 @@
 # Joubako and Chronos HTTP/1.1 Benchmark
 
-This document records a controlled HTTP/1.1 client comparison between
-Joubako v0.2.0 and Chronos v4.4.0. It measures a deliberately narrow workload;
-it is not a claim that either project is universally faster.
+This document records controlled HTTP/1.1 client comparisons between Joubako
+and Chronos v4.4.0. It measures deliberately narrow workloads; it is not a
+claim that either project is universally faster.
 
 The benchmark was added after the v0.2.0 release without changing Joubako's
 runtime sources. The measured `v0.2.0` tag and the benchmark branch have no
@@ -44,6 +44,7 @@ The source is checked in as:
 - Nim 2.2.10
 - Node.js 23.3.0
 - Joubako v0.2.0 (`0897b55c2c2962d597d0b98e064db382ded06ac4`)
+- Joubako v0.2.2 (release tag `v0.2.2`)
 - Chronos v4.4.0 (`55adad164db35f7f6973177c5b5ff48fcd6b6450`)
 - nim-bearssl v0.2.12 (`945ac7beb5f18172c04f253e6210ebe9b0545050`)
 
@@ -55,11 +56,58 @@ connection reuse, while noting that pipelining itself is not implemented.
 The benchmark therefore reports both the actual default and the explicit
 persistent-pool configuration.
 
-Joubako retains up to eight idle connections by default. The benchmark reports
-that default and a pool sized to the concurrency level of 32. Chronos uses a
-maximum of 32 connections in both modes.
+Joubako v0.2.0 retains up to eight idle connections by default. Its baseline
+benchmark reports that default and a pool sized to the concurrency level of
+32. Joubako v0.2.2 raises the default to 32 and additionally retains the legacy
+8-connection mode for regression measurements. Chronos uses a maximum of 32
+connections in both modes.
 
-## Results
+## v0.2.2 optimization update
+
+Joubako v0.2.2 increases its default idle pool to 32 and removes avoidable
+request copies, empty-header allocations, response-header normalization,
+duplicate Content-Length parsing, and common-path orchestration Futures. It
+retains request validation, typed Results, response limits, deadlines,
+cancellation, and the standard `asyncdispatch` and `AsyncHttpClient` runtime.
+
+The update was measured on the same host described below with 200 warmup
+requests and 5,000 measured requests per sample. Each published value is the
+median of three independent runs, with five samples per run. Client order was
+reversed between runs. Both clients used at most 32 persistent HTTP/1.1
+connections and allowed only one active request per connection.
+
+Chronos names the flag that gates persistent reuse `Http11Pipeline`, but
+Chronos v4.4.0 marks it deprecated and explicitly states that pipelining is not
+implemented. It enables keep-alive reuse for this benchmark; it does not send
+multiple simultaneous requests on one connection.
+
+### ARC
+
+| Workload | Joubako v0.2.2 | Chronos v4.4.0 persistent | Joubako difference |
+| --- | ---: | ---: | ---: |
+| Sequential GET | 8,478.5 op/s | 8,316.2 op/s | +2.0% |
+| Concurrent GET (32) | 20,875.0 op/s | 25,498.0 op/s | -18.1% |
+
+### ORC
+
+| Workload | Joubako v0.2.2 | Chronos v4.4.0 persistent | Joubako difference |
+| --- | ---: | ---: | ---: |
+| Sequential GET | 8,298.5 op/s | 8,057.3 op/s | +3.0% |
+| Concurrent GET (32) | 20,557.7 op/s | 24,979.2 op/s | -17.7% |
+
+Joubako wins this sequential loopback workload but does not beat Chronos under
+32-request concurrency. Chronos completes about 22% more concurrent ARC
+operations and 22% more concurrent ORC operations when expressed relative to
+Joubako's throughput.
+
+A Linux syscall diagnostic observed approximately 20,448 `epoll_ctl` calls
+for 5,000 Joubako requests and 64 for the equivalent Chronos run. This is an
+important lead, not proof that selector behavior explains the entire
+throughput difference: the clients also have different HTTP parsers, stream
+implementations, Future scheduling, timeout handling, and pool internals. A
+fixed-connection raw TCP benchmark is needed to isolate the event loops.
+
+## v0.2.0 baseline results
 
 Higher operations per second are better.
 
@@ -97,6 +145,14 @@ Joubako v0.2.0 had not undergone a dedicated performance-optimization phase.
 The result shows competitive ordinary sequential performance while also
 quantifying the advantage of Chronos's mature async runtime and connection
 management under high connection reuse.
+
+The projects also make different architectural choices. Joubako's default
+HTTP/1.1 transport intentionally retains Nim's standard `asyncdispatch`
+Future, event loop, and `AsyncHttpClient` interoperability. Chronos supplies a
+lower-level runtime optimized around its own networking primitives. Joubako
+uses this benchmark to find avoidable overhead in its application-facing
+layers and to prevent regressions; it does not treat replacing the standard
+runtime or maintaining a private HTTP/1.1 stack as a prerequisite for success.
 
 ## Limitations
 
@@ -151,4 +207,7 @@ nim c -d:release -r --mm:orc \
 
 The workload is configurable through `JOUBAKO_HTTP1_BENCH_ITERATIONS`,
 `JOUBAKO_HTTP1_BENCH_CONCURRENCY`, `JOUBAKO_HTTP1_BENCH_SAMPLES`,
-`JOUBAKO_HTTP1_BENCH_WARMUP`, and `JOUBAKO_HTTP1_BENCH_URL`.
+`JOUBAKO_HTTP1_BENCH_WARMUP`, and `JOUBAKO_HTTP1_BENCH_URL`. Use
+`JOUBAKO_HTTP1_BENCH_WORKLOAD=get|post|all` to select the request type,
+`JOUBAKO_HTTP1_BENCH_POOL=legacy|default|matched|all` for Joubako, and
+`JOUBAKO_HTTP1_BENCH_CHRONOS_MODE=default|persistent|all` for Chronos.

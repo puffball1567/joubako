@@ -6,6 +6,15 @@ proc handler(request: Request): Future[Response] {.async.} =
     return Response(status: 404, request: request)
   return Response(status: 200, body: "ok", request: request)
 
+type SynchronousFailureTransport = ref object of Transport
+
+method send(
+    transport: SynchronousFailureTransport;
+    request: Request
+): Future[Response] =
+  discard transport
+  raise newException(IOError, "synchronous dispatch failure: " & request.url)
+
 suite "Result-valued client API":
   test "await returns Ok for a successful request":
     let client = newClient(newInProcessTransport(handler))
@@ -30,3 +39,24 @@ suite "Result-valued client API":
     let outcome = waitFor pending
     check outcome.isOk
     check outcome.value == 404
+
+  test "synchronous transport failures remain Result values":
+    let client = newClient(SynchronousFailureTransport())
+    let pending = client.get("/sync-failure")
+    let outcome = waitFor pending
+    check not pending.failed
+    check outcome.isErr
+    check outcome.error.kind == jeTransport
+    check outcome.error.msg.startsWith("synchronous dispatch failure")
+
+  test "telemetry observers cannot turn a request into a failed Future":
+    let client = newClient(newInProcessTransport(handler))
+    client.useOpenTelemetry(
+      proc(_: OpenTelemetrySpan) =
+        raise newException(IOError, "observer failure")
+    )
+    let pending = client.get("success")
+    let outcome = waitFor pending
+    check not pending.failed
+    check outcome.isOk
+    check outcome.value.body == "ok"

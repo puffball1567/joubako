@@ -3,6 +3,10 @@ import std/[algorithm, monotimes, os, parseutils, strformat, strutils, times]
 const
   DefaultBaseUrl* = "http://127.0.0.1:18944/"
   ExpectedBodyBytes* = 128
+  PostBodyBytes* = 1_024
+
+proc postBody*(): string =
+  repeat("p", PostBodyBytes)
 
 type
   BenchConfig* = object
@@ -40,4 +44,3 @@ proc report*(client, mode, workload: string; samples: var seq[int64];
   let nsPerOperation = elapsedNs div operations.int64
   echo &"{client} | {mode} | {workload}: {operationsPerSecond:.1f} op/s, " &
     &"{nsPerOperation} ns/op (median of {samples.len} samples)"
-

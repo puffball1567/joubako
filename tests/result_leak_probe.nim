@@ -1,4 +1,4 @@
-import std/[asyncdispatch, os, strutils]
+import std/[asyncdispatch, monotimes, os, strutils]
 import joubako
 
 const Iterations = 800
@@ -140,7 +140,8 @@ proc main(): Future[void] {.async.} =
   doAssert callbackTotal == (Iterations - 1) * Iterations div 2
 
   let outputPath = getTempDir() /
-    ("joubako-result-leak-" & $getCurrentProcessId() & ".bin")
+    ("joubako-result-leak-" & $getCurrentProcessId() & "-" &
+      $getMonoTime().ticks & ".bin")
   defer:
     if fileExists(outputPath):
       removeFile(outputPath)

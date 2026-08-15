@@ -186,7 +186,10 @@ func isHostAllowed*(host: string; allowedHosts: openArray[string]): bool =
       return true
 
 func initHeaders*(): Headers =
-  Headers(values: initOrderedTable[string, seq[string]]())
+  ## OrderedTable is safely self-initializing on its first insertion. Keeping
+  ## the overwhelmingly common empty header set at its default value avoids a
+  ## backing-table allocation for both API defaults and merged requests.
+  Headers()
 
 proc add*(headers: var Headers; name, value: string) =
   let key = normalizeHeader(name)
@@ -194,6 +197,29 @@ proc add*(headers: var Headers; name, value: string) =
     headers.values[key].add value
   else:
     headers.values[key] = @[value]
+
+proc addNormalizedHeader(headers: var Headers; name, value: string) =
+  if name in headers.values:
+    headers.values[name].add value
+  else:
+    headers.values[name] = @[value]
+
+proc addParsedHeader*(headers: var Headers; name, value: string) =
+  ## Preserve the allocation-free path of parsers that already produce
+  ## lowercase names, while retaining `add`'s normalization for unusual or
+  ## malformed names. In particular, surrounding whitespace is never allowed
+  ## to create a second logical header name.
+  var normalized = name.len > 0 and
+    name[0] notin Whitespace and name[^1] notin Whitespace
+  if normalized:
+    for character in name:
+      if character in {'A' .. 'Z'}:
+        normalized = false
+        break
+  if normalized:
+    headers.addNormalizedHeader(name, value)
+  else:
+    headers.add(name, value)
 
 proc set*(headers: var Headers; name, value: string) =
   headers.values[normalizeHeader(name)] = @[value]

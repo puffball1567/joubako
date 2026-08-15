@@ -9,9 +9,17 @@ and network boundaries.
 
 ## Purpose
 
-Joubako is a transport client for native applications. It provides a concise,
-asynchronous API for calling application backends and external services without
-coupling that API to a particular GUI toolkit.
+Joubako is an application-facing HTTP and transport client for native Nim
+applications. It provides a concise asynchronous API for calling application
+backends and external services without coupling that API to a particular GUI
+toolkit or replacing Nim's standard asynchronous runtime.
+
+The default HTTP/1.1 transport is built on `std/asyncdispatch` and
+`std/httpclient`. This is a product choice, not an implementation placeholder:
+Nim developers should be able to carry their existing knowledge of standard
+`Future`, `async`, and `await` directly into Joubako. The project adds a more
+intuitive application API and a thick set of production HTTP capabilities on
+top of that familiar base.
 
 The initial objective is an ergonomic Nim alternative to the common
 request/response workflow associated with browser-side libraries such as Axios.
@@ -86,6 +94,17 @@ TLS stack. Planned transport adapters are:
 
 Each transport must implement the same cancellation, deadline, size-limit, and
 error-reporting contracts.
+
+`HttpTransport` remains the standard-library-backed default and follows improvements
+in Nim's standard HTTP and asynchronous libraries. Joubako may remove overhead
+in its own layers, but it will not fork `asyncdispatch`, create a private event
+loop, or reimplement HTTP/1.1 merely to match a lower-level networking runtime
+in loopback benchmarks.
+
+The libcurl-backed `Http2Transport` remains an explicitly selected capability
+adapter for HTTP/2 multiplexing and gRPC. It preserves the same public
+`asyncdispatch` Future and `JResult` contract and does not make libcurl the
+default HTTP/1.1 backend.
 
 ### Codecs
 
@@ -193,8 +212,11 @@ Joubako will not:
 
 - implement a GUI toolkit or state-management framework;
 - implement business workflows, authentication UI, or server-side logic;
+- implement or require a private asynchronous runtime or custom Future type;
 - replace a mature HTTP parser, TLS implementation, or operating-system IPC
   primitive;
+- replace the standard HTTP/1.1 transport solely to win synthetic loopback
+  benchmarks;
 - silently retry all failures;
 - require JSON when both parties deliberately use NIF;
 - make browser-only constraints such as CORS part of native request behavior.

@@ -266,6 +266,13 @@ proc captureRequest(
     "Connection: close\r\n\r\n" & responseBody
   )
 
+proc captureRequestPair(
+    server: AsyncSocket;
+    first, second: Future[CapturedRequest]
+): Future[void] {.async.} =
+  await captureRequest(server, first)
+  await captureRequest(server, second)
+
 proc exerciseRedirectMethod(
     status: int;
     body: string
@@ -542,10 +549,30 @@ proc exerciseActiveCancellation(): Future[ErrorKind] {.async.} =
   await accepted
   token.cancel("superseded")
 
+  if not await pending.withTimeout(2_000):
+    server.close()
+    raise newException(
+      AssertionDefect,
+      "active cancellation did not complete the public request promptly"
+    )
+
   try:
     discard await pending
   except JoubakoError as error:
-    await serving
+    if not await serving.withTimeout(2_000):
+      server.close()
+      when defined(windows) and NimMajor == 2 and NimMinor == 2 and
+          NimPatch == 0:
+        # Nim 2.2.0's Windows IOCP recv does not reliably wake when the peer
+        # closes a socket concurrently. The public cancellation Future above
+        # remains mandatory and proves prompt application-visible behaviour;
+        # stable Nim on Windows still has to observe the peer close here.
+        discard
+      else:
+        raise newException(
+          AssertionDefect,
+          "active cancellation did not close the HTTP connection promptly"
+        )
     return error.kind
   raise newException(AssertionDefect, "request should have been cancelled")
 
@@ -1022,6 +1049,31 @@ suite "Joubako HTTP transport":
     ]
     server.close()
 
+  test "the total deadline includes asynchronous chunk consumers":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let serving = serveChunkedBody(server, @["data"])
+    let client = newClient(newHttpTransport())
+    var options = defaultRequestOptions()
+    options.timeoutMs = 20
+    options.onDownloadChunkAsync =
+      proc(_: string): Future[void] {.async.} =
+        await sleepAsync(200)
+    try:
+      discard waitFor client.get(
+        "http://127.0.0.1:" & $int(port) & "/",
+        options = options
+      )
+      fail()
+    except JoubakoError as error:
+      check error.kind == jeTimeout
+      check "delivering the response" in error.msg
+    waitFor serving
+    server.close()
+
   test "asynchronous consumer failures are structured stream errors":
     let server = newAsyncSocket(buffered = false)
     server.setSockOpt(OptReuseAddr, true)
@@ -1255,6 +1307,38 @@ suite "Joubako HTTP transport":
     check "name=\"document\"; filename=\"report.bin\"" in request.body
     check "binary\0payload" in request.body
     check uploaded == (int64(request.body.len), int64(request.body.len))
+    server.close()
+
+  test "multipart framing headers do not leak into the next request":
+    let server = newAsyncSocket(buffered = false)
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0), "127.0.0.1")
+    server.listen()
+    let (_, port) = server.getLocalAddr()
+    let first = newFuture[CapturedRequest]("test_http.multipartHeaderFirst")
+    let second = newFuture[CapturedRequest]("test_http.multipartHeaderSecond")
+    let serving = captureRequestPair(server, first, second)
+    let sourcePath = getTempDir() /
+      ("joubako-upload-header-state-" & $getCurrentProcessId() & ".bin")
+    defer:
+      if fileExists(sourcePath):
+        removeFile(sourcePath)
+    writeFile(sourcePath, "data")
+    let transport = newHttpTransport(maxIdleConnections = 1)
+    let client = newClient(
+      transport,
+      "http://127.0.0.1:" & $int(port) & "/"
+    )
+    discard waitFor client.postMultipart(
+      "upload", [formFilePath("file", sourcePath)]
+    )
+    discard waitFor client.get("ordinary")
+    waitFor serving
+    check "content-type: multipart/form-data" in
+      first.read.headers.toLowerAscii
+    check "content-type:" notin second.read.headers.toLowerAscii
+    check second.read.requestLine.startsWith("GET /ordinary ")
+    transport.closeIdleConnections()
     server.close()
 
   test "streamed multipart enforces the complete wire-size limit":

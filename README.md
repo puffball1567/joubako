@@ -1,12 +1,14 @@
 # Joubako
 
-## Async networking, finally built for Nim.
+## Nim's async HTTP stack, made intuitive.
 
-**Axios-style flow. Native `await`. Typed failures. ARC and ORC.**
+**Standard `await`. Typed results. Production-ready HTTP. ARC and ORC.**
 
-Joubako is the native async transport client for Nim. It replaces transport
-plumbing with clear application code—and keeps that code in control when the
-network fails, stalls, redirects, retries, or sends more data than promised.
+Joubako is the application-facing asynchronous HTTP client for Nim. Its default
+HTTP/1.1 transport builds on `std/asyncdispatch` and `std/httpclient`, then adds
+the API, typed results, resilience, codecs, streaming, and secure defaults that
+real applications need. Existing Nim knowledge carries over directly: there is
+no custom runtime and no custom await operator.
 
 Write requests in a straight line. Launch independent work together. Chain
 callbacks without callback hell. Stream large bodies without retaining them.
@@ -15,8 +17,10 @@ and in-process calls.
 
 ## Write less plumbing. Ship stronger clients.
 
-- **Read async code like synchronous code.** Standard Nim `await`. No custom
-  runtime. No custom await operator.
+- **Stay with standard Nim.** Use the same `Future`, `async`, `await`, and
+  event loop as other `std/asyncdispatch` code.
+- **Read network code like application code.** Base URLs, typed bodies,
+  results, and policies replace repeated transport plumbing.
 - **Own every operational failure.** Transport, timeout, cancellation, HTTP,
   size, and codec failures become typed `JResult.Err` values.
 - **Compose without callback hell.** Use `then`, `catch`, `finally`, and `all`
@@ -44,6 +48,26 @@ a messenger. This Joubako carries application requests and responses across
 process and network boundaries: typed, protected, and delivered to their
 destination.
 
+## Standard Nim underneath
+
+The default `HttpTransport` deliberately uses Nim's standard asynchronous
+stack. Joubako does not replace the event loop, maintain a private HTTP/1.1
+parser, or require applications to migrate to a different `Future` type. This
+keeps it straightforward to add to UI applications, services, command-line
+tools, and existing `asyncdispatch` code.
+
+Joubako improves the application-facing layer and adopts improvements from the
+Nim standard library as they become available. It may optimize its own request
+handling, connection pool, limits, and allocation behavior, but creating a
+second general-purpose async runtime solely to win a narrow benchmark is not a
+project goal.
+
+HTTP/2 is the current exception. `Http2Transport` is an explicitly selected
+libcurl-backed transport because Nim's standard HTTP client does not currently
+provide the required HTTP/2 framing and multiplexing. It preserves Joubako's
+public `asyncdispatch` and `JResult` API; it does not turn libcurl into the
+default HTTP/1.1 engine.
+
 ## Architecture and dependencies
 
 Joubako depends on FlowBrigade 0.5 or newer for generic resilience mechanisms
@@ -52,7 +76,9 @@ and bulkheads. HTTP-specific retry classification remains Joubako's
 responsibility. Joubako builds bounded streaming gzip and deflate decoding on
 nim-zlib 0.2 or newer and its bundled zlib implementation. The optional
 HTTP/2 transport uses the libcurl Nim bindings and a system libcurl build with
-HTTP/2 support; libcurl commonly delegates framing and HPACK to nghttp2.
+HTTP/2 support; libcurl commonly delegates framing and HPACK to nghttp2. The
+binding is currently a declared Nimble dependency because `Http2Transport`
+ships in the main package. The default `HttpTransport` does not call libcurl.
 GraphQL executable documents are validated with the maintained
 `status-im/nim-graphql` parser; Joubako owns the typed builder, HTTP envelope,
 response decoding, limits, and Result boundary.
@@ -74,6 +100,12 @@ and its declared dependencies through Nimble:
 ```sh
 nimble install joubako
 ```
+
+This command installs Joubako's Nim dependencies, including the libcurl Nim
+binding. Ordinary HTTP/1.1 requests through `newHttpTransport()` use Nim's
+standard library and do not require a system libcurl runtime. Selecting
+`newHttp2Transport()` additionally requires an HTTP/2-capable system libcurl;
+see [HTTP/2](#http2) for platform details.
 
 Then import the public entry point:
 
@@ -1188,7 +1220,7 @@ be URL-encoded when they contain reserved characters.
 The older `proxy = newProxy(...)` constructor argument remains supported and
 takes precedence over `ProxyOptions` for compatibility.
 
-`HttpTransport` retains up to eight completed keep-alive connections by
+`HttpTransport` retains up to 32 completed keep-alive connections by
 default. Concurrent requests never share an active connection; each request
 checks out an idle connection or creates a new one. Set
 `maxIdleConnections = 0` to disable retention, or call
@@ -1502,9 +1534,14 @@ not pass/fail thresholds. The HTTP/2 and gRPC integration suites remain the
 correctness gate. A checked-in [reference ARC/ORC run](docs/network-benchmark.md)
 documents the exact workload and host environment.
 
-A separate [Joubako v0.2.0 versus Chronos v4.4.0 HTTP/1.1 comparison](docs/chronos-http1-benchmark.md)
+A separate [Joubako and Chronos HTTP/1.1 comparison](docs/chronos-http1-benchmark.md)
 publishes the benchmark source, controlled loopback methodology, ARC/ORC
-results, and important limits on what those measurements mean.
+results, and important limits on what those measurements mean. The v0.2.2
+update reports the result directly: Joubako is faster in the measured
+sequential GET workload, while Chronos remains faster at 32-request
+concurrency. Joubako uses that comparison to detect regressions and guide
+optimizations within its standard-library architecture. It is not a plan to
+replace `asyncdispatch` or reimplement the low-level HTTP stack.
 
 ## License
 
