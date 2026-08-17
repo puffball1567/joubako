@@ -141,6 +141,7 @@ jobs:
         if: matrix.nim-version == 'stable'
         run: |
           nim check --mm:${{ matrix.memory-manager }} --path:src src/joubako.nim
+          nim check --mm:${{ matrix.memory-manager }} --path:src src/joubako/cabi.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/basic.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src examples/frameworks/client.nim
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/core_bench.nim
@@ -149,6 +150,23 @@ jobs:
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/network_bench.nim
           node --check benchmarks/http1_bench_server.mjs
           nim check --threads:on --mm:${{ matrix.memory-manager }} --path:src tests/tsan_probe.nim
+
+      - name: Build and smoke-test the C ABI
+        if: matrix.nim-version == 'stable'
+        run: python3 tests/cabi/build_smoke.py --memory-manager ${{ matrix.memory-manager }}
+
+      - name: Install the pinned Prologue integration dependency
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: nimble --legacy install -y prologue@0.6.10
+
+      - name: Run the JSON C ABI and Prologue integration soak
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: >-
+          python3 tests/cabi/run_prologue_soak.py
+          --duration-seconds 15
+          --delay-ms 2
+          --warmup-seconds 3
+          --sample-seconds 3
 
       - name: Run ARC tests with Nim 2.2 Nimble
         if: matrix.nim-version == '2.2.0' && matrix.memory-manager == 'arc'

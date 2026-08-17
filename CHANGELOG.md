@@ -7,6 +7,37 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-17
+
+### Added
+
+- A versioned, synchronous JSON C ABI for C and C++ callers, with opaque
+  client and response handles, explicit ownership, stable error codes, bounded
+  response configuration, header and timeout configuration, and no Nim
+  exceptions crossing the ABI boundary.
+- Cross-platform shared-library smoke tests that compile the public header as
+  C11 and C++17 and load the exported ABI-version symbol under ARC and ORC.
+- C ABI lifecycle coverage in the ASan, Linux LSan, and Linux Valgrind suites,
+  plus a real Prologue 0.6.10 JSON integration gate covering successful and
+  failing HTTP statuses, malformed input, memory growth, and descriptor
+  stability.
+
+### Verified
+
+- The ARC C11 shared-library client completed a three-hour Prologue 0.6.10
+  release gate with 2,540,805 JSON requests and zero failures. Client and
+  server descriptor counts remained fixed, while observed RSS variation stayed
+  within 388 KiB for the client and 2,900 KiB for Prologue.
+
+### Security
+
+- Non-empty request and response bodies crossing the C ABI must be valid JSON,
+  including bounded bodies retained from HTTP error responses. Invalid payloads
+  return a codec error without losing the original response status or body.
+- C ABI clients inherit Joubako's finite network defaults and expose explicit
+  total-timeout and maximum-response-size controls without requiring every
+  application to define a policy before its first request.
+
 ## [0.2.2] - 2026-08-14
 
 ### Added

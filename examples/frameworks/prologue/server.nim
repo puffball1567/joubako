@@ -1,4 +1,4 @@
-import std/[httpcore, json]
+import std/[httpcore, json, os, strutils]
 import prologue
 
 
@@ -39,10 +39,14 @@ proc message(ctx: Context) {.async.} =
     resp jsonResponse(%*{"error": "invalid message"}, Http422)
 
 
+let configuredPort = getEnv("JOUBAKO_DEMO_PORT", "8081").parseInt
+if configuredPort < 1 or configuredPort > 65_535:
+  raise newException(ValueError, "JOUBAKO_DEMO_PORT must be between 1 and 65535")
+
 let settings = newSettings(
   appName = "Joubako Prologue demo",
   debug = false,
-  port = Port(8081)
+  port = Port(configuredPort)
 )
 var app = newApp(settings = settings)
 app.addRoute("/api/health", health, HttpGet)
