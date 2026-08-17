@@ -7,6 +7,7 @@ import argparse
 import ctypes
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,10 +82,22 @@ def main() -> int:
             cwd=ROOT,
             check=True,
         )
-        loaded = ctypes.CDLL(str(library))
-        loaded.joubako_abi_version.restype = ctypes.c_uint32
-        if loaded.joubako_abi_version() != 1:
-            raise RuntimeError("shared library reported an unexpected ABI version")
+        dll_directories = []
+        if os.name == "nt" and hasattr(os, "add_dll_directory"):
+            compiler = shutil.which(cc)
+            search_paths = [work]
+            if compiler is not None:
+                search_paths.append(Path(compiler).resolve().parent)
+            for search_path in search_paths:
+                dll_directories.append(os.add_dll_directory(str(search_path)))
+        try:
+            loaded = ctypes.CDLL(str(library))
+            loaded.joubako_abi_version.restype = ctypes.c_uint32
+            if loaded.joubako_abi_version() != 1:
+                raise RuntimeError("shared library reported an unexpected ABI version")
+        finally:
+            for directory in dll_directories:
+                directory.close()
     return 0
 
 
