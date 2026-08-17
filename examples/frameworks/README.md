@@ -189,6 +189,13 @@ Message accepted by nim-basolato
 The Joubako test suite passed after these runs, and CI compiles the shared demo
 client with ARC both with and without SSL enabled.
 
+Joubako v0.2.3 additionally exercised its compiled C11 JSON ABI against the
+Prologue 0.6.10 server for three hours. It completed 2,540,805 real HTTP
+requests across the same `200`, `201`, `422`, and `404` routes with zero
+failures. Client and server file-descriptor counts remained fixed throughout;
+the complete RSS and FD measurements are published in the
+[C ABI and Prologue soak report](../../docs/c-abi-prologue-soak.md).
+
 These servers are development examples. Production deployments still need the
 framework's normal authentication, HTTPS termination, logging, rate limiting,
 and production server configuration.
