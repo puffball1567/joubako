@@ -2,6 +2,7 @@ nimcache/
 nimble.develop
 nimble.paths
 nimbledeps/
+build/
 __pycache__/
 node_modules/
 examples/frameworks/nestjs/dist/

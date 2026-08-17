@@ -160,6 +160,27 @@ verified through real HTTP communication across Node.js, TypeScript, Python,
 PHP, and Nim—including typed JSON, custom headers, validation, and HTTP error
 handling.
 
+## C and C++ JSON ABI
+
+Joubako also ships a versioned, exception-safe C ABI for C and C++ callers.
+It exposes the bounded HTTP/1.1 JSON request path through opaque client and
+response handles with explicit ownership. The ABI is synchronous at the C
+boundary; Joubako's native Nim API remains asynchronous.
+
+```sh
+nimble buildCAbi
+```
+
+The shared library supports ARC and ORC, validates non-empty request and
+response bodies as JSON, preserves JSON HTTP error responses, and never sends
+a Nim exception across the ABI. See the complete
+[`include/joubako.h`](include/joubako.h) contract, the runnable
+[`examples/cabi/client.c`](examples/cabi/client.c) example, and the
+[`C ABI guide`](docs/c-abi.md).
+
+NIF/BIF is intentionally not part of this boundary. Nim applications continue
+to use Joubako's typed NIFKit integration directly.
+
 ## Local dependency setup
 
 In this workspace, FlowBrigade is developed in the adjacent `timekeeper`

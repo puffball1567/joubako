@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.2"
+version       = "0.2.3"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
@@ -49,6 +49,7 @@ const testPrograms = [
   ("protobuf-codec", "tests/test_protobufcodec.nim"),
   ("upload-stream", "tests/test_uploadstream.nim"),
   ("streaming", "tests/test_streaming.nim"),
+  ("c-abi", "tests/test_cabi.nim"),
 ]
 
 proc runTestSuite(memoryManager: string) =
@@ -78,6 +79,34 @@ task test, "Run the Joubako test suite with ARC":
 
 task testOrc, "Run the Joubako test suite with ORC":
   runTestSuite("orc")
+
+proc cAbiLibraryName(): string =
+  if hostOS == "windows": "joubako.dll"
+  elif hostOS == "macosx": "libjoubako.dylib"
+  else: "libjoubako.so"
+
+proc buildCAbiLibrary(memoryManager: string) =
+  mkDir("build")
+  exec "nim c --app:lib -d:release --mm:" & memoryManager &
+    " -d:ssl --path:src --nimcache:" & temporary(
+      "joubako-" & memoryManager & "-cabi-build-nimcache"
+    ) & " --out:" & quoteShell("build" / cAbiLibraryName()) &
+    " src/joubako/cabi.nim"
+
+task buildCAbi, "Build the JSON C ABI shared library with ARC":
+  buildCAbiLibrary("arc")
+
+task buildCAbiOrc, "Build the JSON C ABI shared library with ORC":
+  buildCAbiLibrary("orc")
+
+task testCAbiShared, "Build and smoke-test the ARC C ABI as C and C++":
+  exec "python3 tests/cabi/build_smoke.py --memory-manager arc"
+
+task testCAbiSharedOrc, "Build and smoke-test the ORC C ABI as C and C++":
+  exec "python3 tests/cabi/build_smoke.py --memory-manager orc"
+
+task soakPrologueCAbi, "Run the three-hour JSON C ABI and Prologue soak":
+  exec "python3 tests/cabi/run_prologue_soak.py"
 
 task testSsl, "Run TLS, mTLS, and SOCKS5h integration tests":
   exec "nim c -r -d:ssl --mm:arc --path:src --nimcache:" & temporary("joubako-secure-transport-nimcache") & " --out:" & temporary("joubako-test-secure-transport") & " tests/test_secure_transport.nim"
@@ -137,6 +166,7 @@ const asanPrograms = [
   ("structured-inputs", "tests/fuzz_inputs.nim"),
   ("async-file-lifecycle", "tests/result_leak_probe.nim"),
   ("http1-lifecycle", "tests/http1_leak_probe.nim"),
+  ("c-abi-lifecycle", "tests/cabi_leak_probe.nim"),
 ]
 
 proc runAsanSuite(memoryManager: string) =
@@ -179,15 +209,21 @@ task ubsan, "Run ARC probes under UndefinedBehaviorSanitizer":
 task ubsanOrc, "Run ORC probes under UndefinedBehaviorSanitizer":
   runUbsanSuite("orc")
 
+const lsanPrograms = [
+  ("result-lifecycle", "tests/result_leak_probe.nim"),
+  ("c-abi-ownership", "tests/cabi_ownership_probe.nim"),
+]
+
 proc runLsanSuite(memoryManager: string) =
   if hostOS != "linux":
     quit "standalone LeakSanitizer is maintained only on Linux; the macOS arm64 CI Apple Clang rejects -fsanitize=leak and Windows lacks a supported runtime"
-  let stem = "joubako-" & memoryManager & "-lsan-lifecycle"
-  exec "nim c -d:release -r --mm:" & memoryManager &
-    " --cc:clang --passC:-fsanitize=leak --passL:-fsanitize=leak" &
-    " --passC:-fno-omit-frame-pointer --path:src --nimcache:" &
-    temporary(stem & "-nimcache") & " --out:" & temporary(stem) &
-    " tests/result_leak_probe.nim"
+  for (name, source) in lsanPrograms:
+    let stem = "joubako-" & memoryManager & "-lsan-" & name
+    exec "nim c -d:release -r --mm:" & memoryManager &
+      " --cc:clang --passC:-fsanitize=leak --passL:-fsanitize=leak" &
+      " --passC:-fno-omit-frame-pointer --path:src --nimcache:" &
+      temporary(stem & "-nimcache") & " --out:" & temporary(stem) &
+      " " & source
 
 task lsan, "Run ARC lifecycle probes under standalone LeakSanitizer":
   runLsanSuite("arc")
@@ -275,6 +311,7 @@ const leakPrograms = [
   ("cbor-codec", "tests/cborcodec_leak_probe.nim", true),
   ("protobuf-codec", "tests/protobufcodec_leak_probe.nim", true),
   ("grpc", "tests/grpc_leak_probe.nim", true),
+  ("c-abi", "tests/cabi_leak_probe.nim", false),
 ]
 
 proc runLeakSuite(memoryManager: string) =
