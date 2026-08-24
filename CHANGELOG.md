@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Runnable Spring Boot, ASP.NET Core, Gin, and Axum integration demos using the
+  existing shared typed client and API contract.
+- A Linux CI compatibility gate that builds all four servers and verifies real
+  `200`, `201`, `422`, and `404` HTTP exchanges through Joubako under both ARC
+  and ORC.
+
 ## [0.2.3] - 2026-08-17
 
 ### Added

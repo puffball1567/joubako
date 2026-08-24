@@ -6,6 +6,9 @@ build/
 __pycache__/
 node_modules/
 examples/frameworks/nestjs/dist/
+examples/frameworks/aspnet/bin/
+examples/frameworks/aspnet/obj/
+examples/frameworks/spring-boot/target/
 tests/test_all
 tests/test_flowbrigade_dependency
 tests/test_http
