@@ -26,6 +26,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   multiple lines into one callback, preventing intermittent gRPC status errors.
 - Aligned the pinned serialization and Protobuf serialization versions used by
   clean CI and Docker E2E builds so Nimble resolves a compatible dependency set.
+- Avoid duplicate CI matrices when a release branch is also the head of a pull
+  request; release candidates are validated by their required PR checks.
 
 ## [0.2.3] - 2026-08-17
 
