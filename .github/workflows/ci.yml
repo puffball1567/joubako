@@ -87,7 +87,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-serialization
-          ref: v0.5.3
+          ref: v0.5.4
           path: _deps/serialization
 
       - name: Checkout CBOR serialization
@@ -101,7 +101,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-protobuf-serialization
-          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          ref: v0.6.2
           path: _deps/protobuf_serialization
 
       - name: Checkout npeg
@@ -442,7 +442,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-serialization
-          ref: v0.5.3
+          ref: v0.5.4
           path: _deps/serialization
 
       - name: Checkout CBOR serialization
@@ -456,7 +456,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-protobuf-serialization
-          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          ref: v0.6.2
           path: _deps/protobuf_serialization
 
       - name: Checkout npeg
@@ -609,7 +609,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-serialization
-          ref: v0.5.3
+          ref: v0.5.4
           path: _deps/serialization
 
       - name: Checkout CBOR serialization
@@ -623,7 +623,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-protobuf-serialization
-          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          ref: v0.6.2
           path: _deps/protobuf_serialization
 
       - name: Checkout npeg

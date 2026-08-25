@@ -376,6 +376,35 @@ proc finalizeHeaders(state: CurlTransfer) =
       return
   state.headersDelivered = true
 
+proc processHeaderLine(state: CurlTransfer; rawLine: string) =
+  let line = rawLine.strip(chars = {'\r', '\n'})
+  if line.startsWith("HTTP/"):
+    state.responseHeaders = initHeaders()
+    state.headersDelivered = false
+    state.status = 0
+    state.statusText = ""
+    let parts = line.splitWhitespace(maxsplit = 2)
+    if parts.len >= 2:
+      state.protocol =
+        if parts[0].startsWith("HTTP/2"): "HTTP/2" else: parts[0]
+      state.status = parts[1].parseInt
+      if parts.len == 3:
+        state.statusText = parts[2]
+  elif line.len == 0:
+    if state.status >= 200:
+      state.finalizeHeaders()
+  else:
+    let separator = line.find(':')
+    if separator > 0:
+      if state.headersDelivered:
+        state.responseTrailers.add(
+          line[0 ..< separator], line[separator + 1 .. ^1].strip
+        )
+      else:
+        state.responseHeaders.add(
+          line[0 ..< separator], line[separator + 1 .. ^1].strip
+        )
+
 proc headerCallback(
     buffer: cstring;
     size, count: int;
@@ -386,35 +415,18 @@ proc headerCallback(
   if state == nil or byteCount <= 0:
     return byteCount
   try:
-    var line = newString(byteCount)
-    copyMem(line[0].addr, buffer, byteCount)
-    line = line.strip(chars = {'\r', '\n'})
-    if line.startsWith("HTTP/"):
-      state.responseHeaders = initHeaders()
-      state.headersDelivered = false
-      state.status = 0
-      state.statusText = ""
-      let parts = line.splitWhitespace(maxsplit = 2)
-      if parts.len >= 2:
-        state.protocol =
-          if parts[0].startsWith("HTTP/2"): "HTTP/2" else: parts[0]
-        state.status = parts[1].parseInt
-        if parts.len == 3:
-          state.statusText = parts[2]
-    elif line.len == 0:
-      if state.status >= 200:
-        state.finalizeHeaders()
-    else:
-      let separator = line.find(':')
-      if separator > 0:
-        if state.headersDelivered:
-          state.responseTrailers.add(
-            line[0 ..< separator], line[separator + 1 .. ^1].strip
-          )
-        else:
-          state.responseHeaders.add(
-            line[0 ..< separator], line[separator + 1 .. ^1].strip
-          )
+    var headerBlock = newString(byteCount)
+    copyMem(headerBlock[0].addr, buffer, byteCount)
+    var offset = 0
+    while offset < headerBlock.len:
+      let newline = headerBlock.find('\n', offset)
+      if newline < 0:
+        state.processHeaderLine(headerBlock[offset .. ^1])
+        break
+      state.processHeaderLine(headerBlock[offset ..< newline])
+      if state.error != nil:
+        return 0
+      offset = newline + 1
     if state.error != nil: 0 else: byteCount
   except CatchableError as error:
     state.rememberError(error.asJoubakoError(jeTransport, state.request.url))
