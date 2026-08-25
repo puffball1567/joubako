@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "release/**"]
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -87,7 +87,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-serialization
-          ref: v0.5.3
+          ref: v0.5.4
           path: _deps/serialization
 
       - name: Checkout CBOR serialization
@@ -101,7 +101,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-protobuf-serialization
-          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          ref: v0.6.2
           path: _deps/protobuf_serialization
 
       - name: Checkout npeg
@@ -150,6 +150,94 @@ jobs:
           nim check --mm:${{ matrix.memory-manager }} --path:src benchmarks/network_bench.nim
           node --check benchmarks/http1_bench_server.mjs
           nim check --threads:on --mm:${{ matrix.memory-manager }} --path:src tests/tsan_probe.nim
+
+      - name: Setup Java for framework compatibility
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: examples/frameworks/spring-boot/pom.xml
+
+      - name: Setup .NET for framework compatibility
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup Go for framework compatibility
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: examples/frameworks/gin/go.mod
+          cache-dependency-path: examples/frameworks/gin/go.sum
+
+      - name: Setup Rust for framework compatibility
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build cross-ecosystem framework compatibility servers
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: |
+          nim c -d:release -d:ssl --mm:arc --path:src \
+            --out:"${RUNNER_TEMP}/joubako-framework-client-arc" \
+            examples/frameworks/client.nim
+          nim c -d:release -d:ssl --mm:orc --path:src \
+            --out:"${RUNNER_TEMP}/joubako-framework-client-orc" \
+            examples/frameworks/client.nim
+          go -C examples/frameworks/gin build -trimpath \
+            -o "${RUNNER_TEMP}/gin-server" .
+          cargo build --release --locked \
+            --manifest-path examples/frameworks/axum/Cargo.toml \
+            --target-dir "${RUNNER_TEMP}/axum-target"
+          dotnet publish examples/frameworks/aspnet/JoubakoDemo.csproj \
+            --configuration Release --no-self-contained \
+            --output "${RUNNER_TEMP}/aspnet"
+          mvn --batch-mode --no-transfer-progress \
+            -f examples/frameworks/spring-boot/pom.xml \
+            -DskipTests package
+
+      - name: Test Joubako with Gin
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: >-
+          python3 tests/integration/run_framework_demo.py
+          --name Gin
+          --server-workdir examples/frameworks/gin
+          --client "${RUNNER_TEMP}/joubako-framework-client-arc"
+          --client "${RUNNER_TEMP}/joubako-framework-client-orc"
+          -- "${RUNNER_TEMP}/gin-server"
+
+      - name: Test Joubako with Axum
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: >-
+          python3 tests/integration/run_framework_demo.py
+          --name Axum
+          --server-workdir examples/frameworks/axum
+          --client "${RUNNER_TEMP}/joubako-framework-client-arc"
+          --client "${RUNNER_TEMP}/joubako-framework-client-orc"
+          -- "${RUNNER_TEMP}/axum-target/release/joubako-axum-demo"
+
+      - name: Test Joubako with ASP.NET Core
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: >-
+          python3 tests/integration/run_framework_demo.py
+          --name "ASP.NET Core"
+          --server-workdir examples/frameworks/aspnet
+          --client "${RUNNER_TEMP}/joubako-framework-client-arc"
+          --client "${RUNNER_TEMP}/joubako-framework-client-orc"
+          -- dotnet "${RUNNER_TEMP}/aspnet/JoubakoDemo.dll"
+
+      - name: Test Joubako with Spring Boot
+        if: matrix.os == 'ubuntu-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
+        run: >-
+          python3 tests/integration/run_framework_demo.py
+          --name "Spring Boot"
+          --server-workdir examples/frameworks/spring-boot
+          --client "${RUNNER_TEMP}/joubako-framework-client-arc"
+          --client "${RUNNER_TEMP}/joubako-framework-client-orc"
+          -- java -jar
+          "${GITHUB_WORKSPACE}/examples/frameworks/spring-boot/target/joubako-spring-boot-demo-0.1.0.jar"
 
       - name: Build and smoke-test the C ABI
         if: matrix.nim-version == 'stable'
@@ -354,7 +442,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-serialization
-          ref: v0.5.3
+          ref: v0.5.4
           path: _deps/serialization
 
       - name: Checkout CBOR serialization
@@ -368,7 +456,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-protobuf-serialization
-          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          ref: v0.6.2
           path: _deps/protobuf_serialization
 
       - name: Checkout npeg
@@ -521,7 +609,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-serialization
-          ref: v0.5.3
+          ref: v0.5.4
           path: _deps/serialization
 
       - name: Checkout CBOR serialization
@@ -535,7 +623,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: status-im/nim-protobuf-serialization
-          ref: 24ddb65800b351268412840b19a33c6b61bb3046
+          ref: v0.6.2
           path: _deps/protobuf_serialization
 
       - name: Checkout npeg

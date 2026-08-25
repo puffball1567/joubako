@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-25
+
+### Added
+
+- Runnable Spring Boot, ASP.NET Core, Gin, and Axum integration demos using the
+  existing shared typed client and API contract.
+- A Linux CI compatibility gate that builds all four servers and verifies real
+  `200`, `201`, `422`, and `404` HTTP exchanges through Joubako under both ARC
+  and ORC.
+- Framework-specific adoption guides for all eleven verified backends, with
+  server implementation excerpts, runnable commands, shared Joubako client
+  usage, verified behavior, and production integration notes.
+
+### Fixed
+
+- Parse every physical HTTP/2 header and trailer line when libcurl batches
+  multiple lines into one callback, preventing intermittent gRPC status errors.
+- Aligned the pinned serialization and Protobuf serialization versions used by
+  clean CI and Docker E2E builds so Nimble resolves a compatible dependency set.
+- Avoid duplicate CI matrices when a release branch is also the head of a pull
+  request; release candidates are validated by their required PR checks.
+
 ## [0.2.3] - 2026-08-17
 
 ### Added
