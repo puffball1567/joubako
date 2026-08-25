@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-08-25
+
 ### Added
 
 - Runnable Spring Boot, ASP.NET Core, Gin, and Axum integration demos using the
