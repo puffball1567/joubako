@@ -546,6 +546,12 @@ suite "gRPC over real HTTP/2":
       waitFor sleepAsync(2)
     check received.len > 0
     let completion = waitFor stream.finish()
+    if completion.isErr:
+      checkpoint(
+        "bidirectional stream completion failed: kind=" &
+          $completion.error.kind & ", code=" & completion.error.codecCode &
+          ", message=" & completion.error.msg
+      )
     check completion.isOk
     if completion.isOk:
       check completion.value.metadata.get("x-bidi-finished") == "yes"

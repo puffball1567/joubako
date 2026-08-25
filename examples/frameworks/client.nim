@@ -33,6 +33,7 @@ proc requireOk[T](outcome: JResult[T]; operation: string): T =
 
 proc main() {.async.} =
   let baseUrl = getEnv("JOUBAKO_DEMO_BASE_URL", "http://127.0.0.1:3000/")
+  let expectedFramework = getEnv("JOUBAKO_DEMO_EXPECTED_FRAMEWORK")
   let transport = newHttpTransport()
   let api = newClient(transport, baseUrl)
 
@@ -45,6 +46,8 @@ proc main() {.async.} =
     "health check"
   )
   doAssert health.ok
+  if expectedFramework.len > 0:
+    doAssert health.framework == expectedFramework
 
   let user = requireOk(
     await api.getJson("api/users/1", UserResponse, headers),
@@ -63,6 +66,8 @@ proc main() {.async.} =
   )
   doAssert created.accepted
   doAssert created.client == "framework-client"
+  if expectedFramework.len > 0:
+    doAssert created.framework == expectedFramework
 
   let invalid = await api.postJson(
     "api/messages",
