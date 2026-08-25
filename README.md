@@ -158,7 +158,10 @@ Joubako client calls equivalent APIs implemented with **Express, NestJS,
 Flask, FastAPI, Laravel, Spring Boot, ASP.NET Core, Gin, Axum, Prologue, and
 nim-basolato**. The same client is verified through real HTTP communication
 across eight server ecosystems—including typed JSON, custom headers,
-validation, and HTTP error handling.
+validation, and HTTP error handling. The
+[`backend integration guides`](docs/framework-integrations/README.md) provide
+one adoption guide per framework, including server code, launch commands,
+Joubako client usage, verified behavior, and production considerations.
 
 ## C and C++ JSON ABI
 

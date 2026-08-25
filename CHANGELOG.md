@@ -14,6 +14,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A Linux CI compatibility gate that builds all four servers and verifies real
   `200`, `201`, `422`, and `404` HTTP exchanges through Joubako under both ARC
   and ORC.
+- Framework-specific adoption guides for all eleven verified backends, with
+  server implementation excerpts, runnable commands, shared Joubako client
+  usage, verified behavior, and production integration notes.
 
 ### Fixed
 

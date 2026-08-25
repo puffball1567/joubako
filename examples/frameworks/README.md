@@ -1,6 +1,6 @@
 # Framework integration demos
 
-One ARC-powered Joubako client communicates with eleven real server-side web
+One shared Joubako client communicates with eleven real server-side web
 frameworks across eight ecosystems: Express, NestJS, Flask, FastAPI, Laravel,
 Spring Boot, ASP.NET Core, Gin, Axum, Prologue, and nim-basolato.
 
@@ -21,6 +21,8 @@ satisfy the same API contract.
 
 The shared client is [`client.nim`](client.nim). Compile it with ARC and SSL;
 SSL may stay enabled even though these local servers use plaintext HTTP.
+For a framework-by-framework adoption walkthrough, see the
+[`backend integration guides`](../../docs/framework-integrations/README.md).
 
 ## Express
 
@@ -213,19 +215,19 @@ servers with ARC on 2026-08-03. The four additional server ecosystems were
 verified with both ARC and ORC on 2026-08-25. All runs used Nim 2.2.10 and
 `-d:ssl`.
 
-| Server | Verified environment | Health | User | Message | Invalid | Missing | Result |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Express | Node.js 23.3.0, Express 5.2.1 | `200` | `200` | `201` | `422` | `404` | Passed |
-| NestJS | Node.js 23.3.0, NestJS 11.1.28 | `200` | `200` | `201` | `422` | `404` | Passed |
-| Flask | Python 3.12.8, Flask 3.1.3 | `200` | `200` | `201` | `422` | `404` | Passed |
-| FastAPI | Python 3.12.8, FastAPI 0.141.1, Uvicorn 0.52.1 | `200` | `200` | `201` | `422` | `404` | Passed |
-| Laravel | PHP 8.3.13, Laravel Framework 12.64.0 | `200` | `200` | `201` | `422` | `404` | Passed |
-| Spring Boot | Temurin 21.0.12.1, Spring Boot 4.1.1 | `200` | `200` | `201` | `422` | `404` | Passed |
-| ASP.NET Core | .NET SDK 8.0.130, ASP.NET Core 8.0.30 | `200` | `200` | `201` | `422` | `404` | Passed |
-| Gin | Go 1.25.0, Gin 1.12.0 | `200` | `200` | `201` | `422` | `404` | Passed |
-| Axum | Rust 1.93.1, Axum 0.8.9 | `200` | `200` | `201` | `422` | `404` | Passed |
-| Prologue | Nim 2.2.10, Prologue 0.6.10 | `200` | `200` | `201` | `422` | `404` | Passed |
-| nim-basolato | Nim 2.2.10, nim-basolato 0.16.1 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Server | Guide | Verified environment | Health | User | Message | Invalid | Missing | Result |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Express | [Guide](../../docs/framework-integrations/express.md) | Node.js 23.3.0, Express 5.2.1 | `200` | `200` | `201` | `422` | `404` | Passed |
+| NestJS | [Guide](../../docs/framework-integrations/nestjs.md) | Node.js 23.3.0, NestJS 11.1.28 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Flask | [Guide](../../docs/framework-integrations/flask.md) | Python 3.12.8, Flask 3.1.3 | `200` | `200` | `201` | `422` | `404` | Passed |
+| FastAPI | [Guide](../../docs/framework-integrations/fastapi.md) | Python 3.12.8, FastAPI 0.141.1, Uvicorn 0.52.1 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Laravel | [Guide](../../docs/framework-integrations/laravel.md) | PHP 8.3.13, Laravel Framework 12.64.0 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Spring Boot | [Guide](../../docs/framework-integrations/spring-boot.md) | Temurin 21.0.12.1, Spring Boot 4.1.1 | `200` | `200` | `201` | `422` | `404` | Passed |
+| ASP.NET Core | [Guide](../../docs/framework-integrations/aspnet-core.md) | .NET SDK 8.0.130, ASP.NET Core 8.0.30 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Gin | [Guide](../../docs/framework-integrations/gin.md) | Go 1.25.0, Gin 1.12.0 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Axum | [Guide](../../docs/framework-integrations/axum.md) | Rust 1.93.1, Axum 0.8.9 | `200` | `200` | `201` | `422` | `404` | Passed |
+| Prologue | [Guide](../../docs/framework-integrations/prologue.md) | Nim 2.2.10, Prologue 0.6.10 | `200` | `200` | `201` | `422` | `404` | Passed |
+| nim-basolato | [Guide](../../docs/framework-integrations/nim-basolato.md) | Nim 2.2.10, nim-basolato 0.16.1 | `200` | `200` | `201` | `422` | `404` | Passed |
 
 Each run also verified typed JSON decoding, JSON request encoding, propagation
 of the `X-Joubako-Demo` header, validation of the message payload, and mapping
@@ -280,8 +282,9 @@ User: nim-basolato User <basolato@example.test>
 Message accepted by nim-basolato
 ```
 
-The Joubako test suite passed after these runs, and CI compiles the shared demo
-client with ARC both with and without SSL enabled.
+The Joubako test suite passed after these runs. CI compiles the shared demo
+client with ARC and ORC, both with and without SSL enabled, and runs the four
+additional server integrations against both memory-manager builds.
 
 Joubako v0.2.3 additionally exercised its compiled C11 JSON ABI against the
 Prologue 0.6.10 server for three hours. It completed 2,540,805 real HTTP
