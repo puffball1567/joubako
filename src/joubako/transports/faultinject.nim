@@ -55,6 +55,18 @@ method usesImplicitCredentials*(transport: FaultInjectingTransport): bool =
   transport != nil and transport.delegate != nil and
     transport.delegate.usesImplicitCredentials
 
+method supportsRuntimeMultipartLimits*(
+    transport: FaultInjectingTransport
+): bool =
+  transport != nil and transport.delegate != nil and
+    transport.delegate.supportsRuntimeMultipartLimits
+
+method close*(transport: FaultInjectingTransport): Future[void] =
+  if transport != nil and transport.delegate != nil:
+    return transport.delegate.close()
+  result = newFuture[void]("Joubako.FaultInjectingTransport.close")
+  result.complete()
+
 proc chooseStep(transport: FaultInjectingTransport): FaultStep =
   inc transport.callCount
   if transport.steps.len == 0:

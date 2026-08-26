@@ -42,13 +42,20 @@ suite "HTTP/2 transport":
   test "streams a request body in order through a bounded producer queue":
     let transport = newHttp2Transport(allowH2c = true)
     let api = newClient(transport, h2Base)
+    var opts = options()
+    # A seven-byte queue deliberately forces thousands of libcurl
+    # pause/resume cycles. Keep this backpressure stress independent of the
+    # ordinary 30-second client deadline on slower CI runners.
+    opts.timeoutMs = 120_000
     let upload = api.openUpload(
-      rmPost, "/upload-stream", maxBufferedBytes = 7
+      rmPost, "/upload-stream", options = opts, maxBufferedBytes = 7
     )
     check (waitFor upload.send("alpha-")).isOk
     check (waitFor upload.send(repeat("0123456789", 4096))).isOk
     check (waitFor upload.send("-omega")).isOk
     let outcome = waitFor upload.finish()
+    if outcome.isErr:
+      checkpoint "streaming upload failed: " & outcome.error.msg
     check outcome.isOk
     if outcome.isOk:
       check outcome.value.httpVersion == "HTTP/2"
@@ -540,6 +547,25 @@ suite "HTTP/2 transport":
     check errorKind(transport.send(request("/", requestOptions = opts))) ==
       jeCancelled
     waitFor transport.close()
+
+  test "client close cancels active transfers through the common contract":
+    let transport = newHttp2Transport(allowH2c = true)
+    let api = newClient(transport, h2Base)
+    let pending = api.get("/slow")
+    waitFor sleepAsync(10)
+
+    let closed = waitFor api.close()
+    check closed.isOk
+    check api.isClosed
+
+    let interrupted = waitFor pending
+    check interrupted.isErr
+    check interrupted.error.kind == jeCancelled
+    check interrupted.error.msg == "HTTP/2 transport closed"
+
+    let afterClose = waitFor api.get("/")
+    check afterClose.isErr
+    check afterClose.error.kind == jeInvalidRequest
 
   test "multiplexes concurrent requests over one transport":
     let transport = newHttp2Transport(allowH2c = true)

@@ -1237,7 +1237,7 @@ proc redirectingExchange(
       jeTransport, request.url
     ))
 
-proc close*(transport: Http2Transport): Future[void] {.async.} =
+method close*(transport: Http2Transport): Future[void] {.async.} =
   ## Cancels active transfers and releases the connection pool.
   if transport == nil or transport.closed:
     return
