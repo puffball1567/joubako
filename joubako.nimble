@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.4"
+version       = "0.2.5"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
