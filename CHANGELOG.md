@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-26
+
 ### Added
 
 - A Result-valued, idempotent `client.close()` lifecycle API that permanently
