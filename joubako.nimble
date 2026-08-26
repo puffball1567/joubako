@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.4"
+version       = "0.2.5"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
@@ -49,6 +49,7 @@ const testPrograms = [
   ("protobuf-codec", "tests/test_protobufcodec.nim"),
   ("upload-stream", "tests/test_uploadstream.nim"),
   ("streaming", "tests/test_streaming.nim"),
+  ("transport-lifecycle", "tests/test_transport_lifecycle.nim"),
   ("c-abi", "tests/test_cabi.nim"),
 ]
 
@@ -165,6 +166,7 @@ task fuzzOrc, "Run deterministic structured-input fuzzing with ORC":
 const asanPrograms = [
   ("structured-inputs", "tests/fuzz_inputs.nim"),
   ("async-file-lifecycle", "tests/result_leak_probe.nim"),
+  ("transport-lifecycle", "tests/transport_lifecycle_leak_probe.nim"),
   ("http1-lifecycle", "tests/http1_leak_probe.nim"),
   ("c-abi-lifecycle", "tests/cabi_leak_probe.nim"),
 ]
@@ -211,6 +213,7 @@ task ubsanOrc, "Run ORC probes under UndefinedBehaviorSanitizer":
 
 const lsanPrograms = [
   ("result-lifecycle", "tests/result_leak_probe.nim"),
+  ("transport-lifecycle", "tests/transport_lifecycle_leak_probe.nim"),
   ("c-abi-ownership", "tests/cabi_ownership_probe.nim"),
 ]
 
@@ -297,6 +300,7 @@ const leakPrograms = [
   ("core", "tests/leak_probe.nim", false),
   ("http1", "tests/http1_leak_probe.nim", false),
   ("result", "tests/result_leak_probe.nim", true),
+  ("transport-lifecycle", "tests/transport_lifecycle_leak_probe.nim", true),
   ("compression", "tests/compression_leak_probe.nim", true),
   ("cookiejar", "tests/cookiejar_leak_probe.nim", true),
   ("fault", "tests/fault_leak_probe.nim", true),

@@ -93,7 +93,10 @@ TLS stack. Planned transport adapters are:
 - in-process transport for tests and local composition
 
 Each transport must implement the same cancellation, deadline, size-limit, and
-error-reporting contracts.
+error-reporting contracts. The common lifecycle also provides asynchronous
+shutdown so applications can release pooled connections without retaining a
+transport-specific handle; stateless third-party transports may use the
+compatible no-op default.
 
 `HttpTransport` remains the standard-library-backed default and follows improvements
 in Nim's standard HTTP and asynchronous libraries. Joubako may remove overhead

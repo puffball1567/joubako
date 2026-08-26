@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-26
+
+### Added
+
+- A Result-valued, idempotent `client.close()` lifecycle API that permanently
+  rejects later requests and releases resources through the common transport
+  contract without requiring callers to retain a transport-specific handle.
+- ARC and ORC lifecycle tests plus ASan, Linux LSan, and Valgrind probes for
+  repeated client and nested-wrapper shutdown.
+
+### Changed
+
+- HTTP cache and fault-injection wrappers now preserve delegate credential and
+  runtime multipart-limit capabilities and forward transport shutdown through
+  arbitrary wrapper nesting.
+- Closing the standard HTTP/1.1 transport now prevents new requests, releases
+  retained keep-alive sockets, and closes rather than re-pools connections from
+  requests that were already in progress.
+
 ## [0.2.4] - 2026-08-25
 
 ### Added

@@ -183,6 +183,22 @@ proc newCachingTransport*(
 ): CachingTransport =
   newCachingTransport(delegate, newMemoryHttpCache(), options)
 
+method usesImplicitCredentials*(transport: CachingTransport): bool =
+  transport != nil and transport.delegate != nil and
+    transport.delegate.usesImplicitCredentials
+
+method supportsRuntimeMultipartLimits*(transport: CachingTransport): bool =
+  ## Cacheable requests never use multipart bodies, so forwarding this
+  ## capability is safe and keeps POST/PUT policy checks transparent.
+  transport != nil and transport.delegate != nil and
+    transport.delegate.supportsRuntimeMultipartLimits
+
+method close*(transport: CachingTransport): Future[void] =
+  if transport != nil and transport.delegate != nil:
+    return transport.delegate.close()
+  result = newFuture[void]("Joubako.CachingTransport.close")
+  result.complete()
+
 func parseNonNegative(value: string): Option[int64] =
   var parsed: BiggestInt
   if parseBiggestInt(value.strip, parsed) == value.strip.len and parsed >= 0:

@@ -152,6 +152,29 @@ Plain HTTP, Unix IPC, in-process transport, codecs, and the common request API
 remain available without `-d:ssl`. The example above is available as
 [`examples/basic.nim`](examples/basic.nim).
 
+### Closing a client
+
+Long-lived applications can release keep-alive pools and other transport
+resources through the same client value used for requests. The operation is
+asynchronous, Result-valued, and idempotent:
+
+```nim
+let closed = await api.close()
+if closed.isErr:
+  echo "failed to close the HTTP client: ", closed.error.msg
+```
+
+After `close()` begins, the client permanently rejects new requests. Repeated
+calls return the same close operation. The standard HTTP/1.1 transport allows
+requests already in progress to complete, but closes their connections rather
+than returning them to the idle pool. HTTP/2 shutdown cancels active transfers
+before releasing libcurl's connection pool.
+
+A transport shared by multiple clients also shares its underlying resource
+lifetime. Close it only after every client using that transport has finished.
+Third-party stateless transports remain compatible through the common no-op
+default close implementation.
+
 For complete client-and-server examples, see the
 [`examples/frameworks`](examples/frameworks/README.md) demos. One shared
 Joubako client calls equivalent APIs implemented with **Express, NestJS,
