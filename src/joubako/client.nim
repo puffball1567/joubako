@@ -32,6 +32,8 @@ type
     bulkhead: ref Bulkhead
     rateLimiter: ref TokenBucket
     telemetry: OpenTelemetryConfig
+    closed: bool
+    closeOperation: Future[JResult[void]]
 
 proc addClientCallback(
     source: FutureBase;
@@ -117,6 +119,40 @@ func newClient*(
     validateStatus: validateStatus,
     nextInterceptorId: 1
   )
+
+func isClosed*(client: Client): bool =
+  client == nil or client.closed
+
+proc close*(client: Client): Future[JResult[void]] =
+  ## Permanently closes this client and releases its transport resources.
+  ## Repeated calls share the first close operation. A transport shared by
+  ## multiple clients must therefore have its lifetime coordinated by the
+  ## application.
+  if client == nil:
+    return completedResult(err[void](newJoubakoError(
+      jeInvalidRequest, "cannot close a nil client"
+    )))
+  if client.closeOperation != nil:
+    return client.closeOperation
+  client.closed = true
+  if client.transport == nil:
+    client.closeOperation = completedResult(err[void](newJoubakoError(
+      jeInvalidRequest, "client has no transport"
+    )))
+  else:
+    try:
+      let pending = client.transport.close()
+      if pending == nil:
+        client.closeOperation = completedResult(err[void](newJoubakoError(
+          jeTransport, "transport close returned a nil Future"
+        )))
+      else:
+        client.closeOperation = settle(fallible(pending), jeTransport)
+    except CatchableError as error:
+      client.closeOperation = completedResult(err[void](
+        error.asJoubakoError(jeTransport, "")
+      ))
+  client.closeOperation
 
 proc useRequestInterceptor*(
     client: Client;
@@ -221,7 +257,15 @@ proc prepareRequest(
   ## Request construction is shared by the lightweight single-attempt path
   ## and the full interceptor/resilience path. This keeps every method and
   ## body format under the same defaults and validation contract.
-  if client == nil or client.transport == nil:
+  if client == nil:
+    return err[Request](newJoubakoError(
+      jeInvalidRequest, "client has no transport"
+    ))
+  if client.closed:
+    return err[Request](newJoubakoError(
+      jeInvalidRequest, "client is closed"
+    ))
+  if client.transport == nil:
     return err[Request](newJoubakoError(
       jeInvalidRequest, "client has no transport"
     ))

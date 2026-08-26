@@ -55,6 +55,7 @@ type
     tlsOptions*: TlsOptions
     idleConnections: seq[PooledConnection]
     timeoutScheduler: TimeoutScheduler
+    closed: bool
 
 proc wakeScheduler(scheduler: TimeoutScheduler) =
   if scheduler.sleeping and scheduler.wake != nil and
@@ -385,6 +386,10 @@ proc checkoutConnection(
     transport: HttpTransport;
     url: Uri
 ): PooledConnection =
+  if transport == nil or transport.closed:
+    raise newJoubakoError(
+      jeTransport, "HTTP transport is closed", $url
+    )
   ## Async transports are event-loop local. No yield occurs while the idle
   ## list is inspected, so checkout is atomic within that event loop.
   let selectedProxy =
@@ -464,7 +469,8 @@ proc checkinConnection(
     transport: HttpTransport;
     connection: sink PooledConnection
 ) =
-  if transport.maxIdleConnections == 0 or
+  if transport == nil or transport.closed or
+      transport.maxIdleConnections == 0 or
       transport.idleConnections.len >= int(transport.maxIdleConnections):
     connection.close()
   else:
@@ -476,6 +482,16 @@ proc closeIdleConnections*(transport: HttpTransport) =
   for connection in transport.idleConnections.mitems:
     connection.close()
   transport.idleConnections.setLen(0)
+
+method close*(transport: HttpTransport): Future[void] =
+  ## Prevents new requests and releases retained keep-alive sockets. Requests
+  ## already in progress may complete, but their connections are closed rather
+  ## than returned to the idle pool.
+  if transport != nil and not transport.closed:
+    transport.closed = true
+    transport.closeIdleConnections()
+  result = newFuture[void]("Joubako.HttpTransport.close")
+  result.complete()
 
 func idleConnectionCount*(transport: HttpTransport): int =
   transport.idleConnections.len
@@ -1001,6 +1017,10 @@ proc sendOwnedImpl(
   let requestUrl = request.url
   let cancellation = request.options.cancellation
   try:
+    if transport == nil or transport.closed:
+      raise newJoubakoError(
+        jeTransport, "HTTP transport is closed", request.url
+      )
     if request.uploadSource != nil:
       raise newJoubakoError(
         jeInvalidRequest,

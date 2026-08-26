@@ -4,6 +4,13 @@ import ./types
 type
   Transport* = ref object of RootObj
 
+method close*(transport: Transport): Future[void] {.base.} =
+  ## Releases resources owned by the transport. Stateless and third-party
+  ## transports remain source compatible through this completed no-op default.
+  discard transport
+  result = newFuture[void]("Joubako.Transport.close")
+  result.complete()
+
 method usesImplicitCredentials*(transport: Transport): bool {.base.} =
   ## True when a transport may add end-server credentials after request
   ## interceptors and outer transport wrappers have run.
