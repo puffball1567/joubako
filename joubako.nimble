@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.5"
+version       = "0.2.6"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
@@ -8,7 +8,7 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 requires "flowbrigade >= 0.5.0"
-requires "nifkit >= 0.4.0"
+requires "nifkit >= 0.4.1"
 requires "zlib >= 0.2.0"
 requires "libcurl >= 1.0.0"
 requires "faststreams >= 0.5.1"

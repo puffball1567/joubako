@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-21
+
+### Fixed
+
+- Require NIFKit 0.4.1 so raw NIF requests accept numeric bases, digit
+  separators, and literal `#` and `:` in quoted strings from the current
+  NIF 2027 specification.
+- Verify the updated codec through the existing HTTP helper API while
+  preserving BIF v5 bytes, canonical output, and typed data profiles.
+
 ## [0.2.5] - 2026-08-26
 
 ### Added
