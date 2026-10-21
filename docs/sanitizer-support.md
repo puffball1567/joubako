@@ -49,6 +49,11 @@ Sanitizer instrumentation is used only for CI test executables. Release
 artifacts and downstream builds do not inherit sanitizer compiler or linker
 flags.
 
+Windows ASan builds undefine nim-zlib's `HAVE_UNISTD_H` setting when using
+LLVM Clang with the Windows SDK. The SDK supplies `io.h`, not the POSIX
+`unistd.h`; this adjustment keeps the zlib sources buildable without disabling
+AddressSanitizer.
+
 Every sanitizer failure is classified before changing the matrix:
 
 1. a product test or memory-safety failure;

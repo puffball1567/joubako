@@ -15,9 +15,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Wait for request headers before asserting peer-close notification in the
   active HTTP cancellation test, avoiding a race with Windows connection setup.
 - Wait for HTTP/2 server readiness before running the Valgrind probe.
+- Build the Windows ASan zlib dependency against Windows SDK headers.
 - Retain ORC UBSan coverage with the Nim runtime's type-erased trace callbacks
   excluded from Clang's function-type check.
-
 - Require NIFKit 0.4.1 so raw NIF requests accept numeric bases, digit
   separators, and literal `#` and `:` in quoted strings from the current
   NIF 2027 specification.

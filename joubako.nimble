@@ -174,7 +174,9 @@ const asanPrograms = [
 proc runAsanSuite(memoryManager: string) =
   # Windows uses LLVM Clang's ASan rather than MSVC's implementation.
   let compilerFlag =
-    if hostOS == "windows": " --cc:clang"
+    # nim-zlib assumes non-MSVC compiler names have POSIX headers. LLVM's
+    # Windows ASan target uses the MSVC SDK, which has io.h but no unistd.h.
+    if hostOS == "windows": " --cc:clang --passC:-UHAVE_UNISTD_H"
     else: ""
   let sanitizerFlags =
     compilerFlag & " --passC:-fsanitize=address" &
