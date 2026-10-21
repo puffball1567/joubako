@@ -12,8 +12,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 
 - Keep CI compatible with Nimble 0.24 by removing the retired `--legacy` flag.
-- Shut down Windows HTTP sockets before closing them so cancellation wakes
-  pending IOCP operations and reaches the peer promptly.
+- Wait for request headers before asserting peer-close notification in the
+  active HTTP cancellation test, avoiding a race with Windows connection setup.
+- Wait for HTTP/2 server readiness before running the Valgrind probe.
 - Retain ORC UBSan coverage with the Nim runtime's type-erased trace callbacks
   excluded from Clang's function-type check.
 
