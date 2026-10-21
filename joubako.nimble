@@ -195,10 +195,15 @@ task asanOrc, "Run ORC memory-safety probes under AddressSanitizer":
 proc runUbsanSuite(memoryManager: string) =
   if hostOS == "windows":
     quit "UBSan is disabled on Windows because the LLVM runtime does not link reliably with this Nim toolchain"
-  let flags =
+  var flags =
     " --cc:clang --passC:-fsanitize=undefined --passL:-fsanitize=undefined" &
     " --passC:-fno-sanitize-recover=undefined" &
     " --passC:-fno-omit-frame-pointer"
+  if memoryManager == "orc":
+    # Nim's ORC trace dispatcher erases generated callback parameter types.
+    # Clang's function-type check rejects those runtime calls; retain all
+    # other UBSan checks and the separate ARC/ORC memory-safety gates.
+    flags.add " --passC:-fno-sanitize=function --passL:-fno-sanitize=function"
   for (name, source) in asanPrograms:
     let stem = "joubako-" & memoryManager & "-ubsan-" & name
     exec "nim c -d:release -r --mm:" & memoryManager & flags &

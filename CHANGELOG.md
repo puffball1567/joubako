@@ -12,6 +12,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 
 - Keep CI compatible with Nimble 0.24 by removing the retired `--legacy` flag.
+- Shut down Windows HTTP sockets before closing them so cancellation wakes
+  pending IOCP operations and reaches the peer promptly.
+- Retain ORC UBSan coverage with the Nim runtime's type-erased trace callbacks
+  excluded from Clang's function-type check.
 
 - Require NIFKit 0.4.1 so raw NIF requests accept numeric bases, digit
   separators, and literal `#` and `:` in quoted strings from the current

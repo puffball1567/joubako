@@ -1,5 +1,7 @@
 import std/[asyncdispatch, asyncnet, base64, httpclient, httpcore, monotimes,
   nativesockets, os, strutils, times, uri]
+when defined(windows):
+  import std/winlean
 when defined(ssl):
   import std/[net, openssl, ssl_config]
 import flowbrigade/timeout
@@ -173,6 +175,10 @@ proc closeImmediately(client: AsyncHttpClient) {.raises: [].} =
   try:
     let socket = client.getSocket()
     if socket != nil and not socket.isClosed:
+      when defined(windows):
+        # Wake outstanding IOCP operations and notify the peer before closing
+        # a socket whose asynchronous connect/read may still be pending.
+        discard winlean.shutdown(socket.getFd(), 2) # SD_BOTH
       socket.close()
     client.close()
   except Exception:
