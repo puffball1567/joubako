@@ -1,6 +1,6 @@
 import std/os
 
-version       = "0.2.5"
+version       = "0.2.6"
 author        = "Joubako contributors"
 description   = "A typed, Promise-friendly transport client for native Nim applications"
 license       = "Apache-2.0"
@@ -8,7 +8,7 @@ srcDir        = "src"
 
 requires "nim >= 2.2.0"
 requires "flowbrigade >= 0.5.0"
-requires "nifkit >= 0.4.0"
+requires "nifkit >= 0.4.1"
 requires "zlib >= 0.2.0"
 requires "libcurl >= 1.0.0"
 requires "faststreams >= 0.5.1"
@@ -174,7 +174,9 @@ const asanPrograms = [
 proc runAsanSuite(memoryManager: string) =
   # Windows uses LLVM Clang's ASan rather than MSVC's implementation.
   let compilerFlag =
-    if hostOS == "windows": " --cc:clang"
+    # nim-zlib assumes non-MSVC compiler names have POSIX headers. LLVM's
+    # Windows ASan target uses the MSVC SDK, which has io.h but no unistd.h.
+    if hostOS == "windows": " --cc:clang --passC:-UHAVE_UNISTD_H"
     else: ""
   let sanitizerFlags =
     compilerFlag & " --passC:-fsanitize=address" &
@@ -195,10 +197,15 @@ task asanOrc, "Run ORC memory-safety probes under AddressSanitizer":
 proc runUbsanSuite(memoryManager: string) =
   if hostOS == "windows":
     quit "UBSan is disabled on Windows because the LLVM runtime does not link reliably with this Nim toolchain"
-  let flags =
+  var flags =
     " --cc:clang --passC:-fsanitize=undefined --passL:-fsanitize=undefined" &
     " --passC:-fno-sanitize-recover=undefined" &
     " --passC:-fno-omit-frame-pointer"
+  if memoryManager == "orc":
+    # Nim's ORC trace dispatcher erases generated callback parameter types.
+    # Clang's function-type check rejects those runtime calls; retain all
+    # other UBSan checks and the separate ARC/ORC memory-safety gates.
+    flags.add " --passC:-fno-sanitize=function --passL:-fno-sanitize=function"
   for (name, source) in asanPrograms:
     let stem = "joubako-" & memoryManager & "-ubsan-" & name
     exec "nim c -d:release -r --mm:" & memoryManager & flags &

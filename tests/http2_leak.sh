@@ -21,11 +21,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for _ in $(seq 1 100); do
+ready=false
+for _ in $(seq 1 600); do
+  if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "HTTP/2 leak test server exited during startup" >&2
+    exit 1
+  fi
   if (echo >/dev/tcp/127.0.0.1/18943) 2>/dev/null; then
+    ready=true
     break
   fi
+  sleep 0.05
 done
+if [[ "$ready" != true ]]; then
+  echo "HTTP/2 leak test server did not become ready within 30 seconds" >&2
+  exit 1
+fi
 
 valgrind --leak-check=full --show-leak-kinds=all \
   --errors-for-leak-kinds=definite,indirect,possible \
