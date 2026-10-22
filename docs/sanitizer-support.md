@@ -53,6 +53,8 @@ Windows ASan builds undefine nim-zlib's `HAVE_UNISTD_H` setting when using
 LLVM Clang with the Windows SDK. The SDK supplies `io.h`, not the POSIX
 `unistd.h`; this adjustment keeps the zlib sources buildable without disabling
 AddressSanitizer.
+CI also places Clang's ASan runtime DLLs beside the temporary Windows test
+executables so the Windows loader can initialize the sanitizer.
 
 Every sanitizer failure is classified before changing the matrix:
 

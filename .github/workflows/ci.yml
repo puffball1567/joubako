@@ -302,6 +302,13 @@ jobs:
           JOUBAKO_FUZZ_ITERATIONS: 2000
         run: nimble --offline asanOrc
 
+      - name: Provide the Windows Clang AddressSanitizer runtime
+        if: matrix.os == 'windows-latest' && matrix.nim-version == 'stable'
+        shell: pwsh
+        run: |
+          $clangResourceDir = (& clang --print-resource-dir).Trim()
+          Copy-Item "$clangResourceDir\lib\windows\clang_rt.*.dll" -Destination ([System.IO.Path]::GetTempPath())
+
       - name: Run Windows Clang ARC AddressSanitizer probes
         if: matrix.os == 'windows-latest' && matrix.nim-version == 'stable' && matrix.memory-manager == 'arc'
         env:
