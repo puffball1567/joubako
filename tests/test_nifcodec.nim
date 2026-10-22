@@ -452,6 +452,21 @@ suite "NIFKit codec integration":
     check contentType == BifMediaType
     check decoded == "(reply \"ok\" 7)"
 
+  test "current NIF numeric and string syntax round-trips through HTTP helpers":
+    var wireBody = ""
+    let handler = proc(request: Request): Future[Response] {.async.} =
+      wireBody = request.body
+      validateBif(wireBody)
+      return Response(status: 200, body: wireBody, request: request)
+    let client = newClient(newInProcessTransport(handler))
+    let canonical = "(command 255 255 255 1000 125.0 \"key\\3A \\23value\")"
+    let decoded = waitFor client.postNif(
+      "/nif",
+      "(command 0xFF 0o377 0b1111_1111 1_000 1_2.5E+0_1 \"key: #value\")"
+    )
+    check decoded == canonical
+    check wireBody == nifToBif(canonical)
+
   test "typed post converts Nim values directly through BIF":
     var captured = CreateRecord()
     var contentType = ""

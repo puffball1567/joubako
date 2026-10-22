@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-21
+
+### Fixed
+
+- Keep CI compatible with Nimble 0.24 by removing the retired `--legacy` flag.
+- Wait for request headers before asserting peer-close notification in the
+  active HTTP cancellation test, avoiding a race with Windows connection setup.
+- Wait for HTTP/2 server readiness before running the Valgrind probe.
+- Build the Windows ASan zlib dependency against Windows SDK headers and
+  provide the sanitizer runtime beside the test executables.
+- Retain ORC UBSan coverage with the Nim runtime's type-erased trace callbacks
+  excluded from Clang's function-type check.
+- Require NIFKit 0.4.1 so raw NIF requests accept numeric bases, digit
+  separators, and literal `#` and `:` in quoted strings from the current
+  NIF 2027 specification.
+- Verify the updated codec through the existing HTTP helper API while
+  preserving BIF v5 bytes, canonical output, and typed data profiles.
+
 ## [0.2.5] - 2026-08-26
 
 ### Added

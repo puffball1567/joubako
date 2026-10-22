@@ -27,11 +27,22 @@ proc serveOne(server: AsyncSocket): Future[void] {.async.} =
 
 proc acceptUntilClosed(
     server: AsyncSocket;
-    accepted: Future[void]
+    accepted: Future[void];
+    waitForRequest = false
 ): Future[void] {.async.} =
   let socket = await server.accept()
   defer:
     socket.close()
+  if waitForRequest:
+    # Accepting a TCP socket does not mean AsyncHttpClient has finished dial
+    # and acquired it yet. Observe request headers before testing cancellation
+    # of an established HTTP exchange, including peer-close notification.
+    var request = ""
+    while "\r\n\r\n" notin request:
+      let chunk = await socket.recv(4096)
+      if chunk.len == 0:
+        raise newException(IOError, "connection closed before request headers")
+      request.add chunk
   accepted.complete()
   while (await socket.recv(4096)).len > 0:
     discard
@@ -536,7 +547,7 @@ proc exerciseActiveCancellation(): Future[ErrorKind] {.async.} =
 
   let (_, port) = server.getLocalAddr()
   let accepted = newFuture[void]("test_http.accepted")
-  let serving = acceptUntilClosed(server, accepted)
+  let serving = acceptUntilClosed(server, accepted, waitForRequest = true)
   let client = newClient(
     newHttpTransport(),
     "http://127.0.0.1:" & $int(port) & "/"

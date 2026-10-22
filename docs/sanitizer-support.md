@@ -21,6 +21,12 @@ linked with the Windows Nim toolchain. Windows still requires the complete test
 matrix, type checks, and Clang ASan for both ARC and ORC. Linux and macOS supply
 the UBSan coverage.
 
+For ORC builds, UBSan excludes only Clang's `function` check. Nim 2.2.12's
+generated cycle-collector trace dispatcher calls type-erased callbacks, which
+that check rejects inside the Nim runtime. The remaining UBSan checks stay
+enabled for ORC; ARC keeps the full UBSan set. Both modes also retain ASan,
+Linux LSan and Valgrind, and the normal platform and C ABI checks.
+
 macOS and Windows set `ASAN_OPTIONS=detect_leaks=0`. Linux ASan performs its
 integrated LSan check and also runs a dedicated standalone LSan lifecycle
 executable. Linux additionally runs the broader Valgrind suite. macOS and
@@ -42,6 +48,13 @@ intentional race in the test harness.
 Sanitizer instrumentation is used only for CI test executables. Release
 artifacts and downstream builds do not inherit sanitizer compiler or linker
 flags.
+
+Windows ASan builds undefine nim-zlib's `HAVE_UNISTD_H` setting when using
+LLVM Clang with the Windows SDK. The SDK supplies `io.h`, not the POSIX
+`unistd.h`; this adjustment keeps the zlib sources buildable without disabling
+AddressSanitizer.
+CI also places Clang's ASan runtime DLLs beside the temporary Windows test
+executables so the Windows loader can initialize the sanitizer.
 
 Every sanitizer failure is classified before changing the matrix:
 
